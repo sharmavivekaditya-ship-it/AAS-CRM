@@ -7,7 +7,8 @@ const OUTCOMES = [
   { k: 'not_answering',  label: 'Not answering',     stage: 'attempting',     tone: 'grey' },
   { k: 'no_response',    label: 'No response',       stage: 'attempting',     tone: 'grey' },
   { k: 'callback',       label: 'Call back',         stage: 'callback',       tone: 'blue' },
-  { k: 'opportunity',    label: 'Opportunity',       stage: 'opportunity',    tone: 'teal' },
+  { k: 'opportunity',    label: 'Funding opportunity', stage: 'opportunity',  tone: 'teal' },
+  { k: 'opp_rating',     label: 'Rating opportunity',  stage: 'opp_rating',   tone: 'orchid' },
   { k: 'mtg_sched',      label: 'Meeting scheduled', stage: 'mtg_sched',      tone: 'violet' },
   { k: 'mtg_done',       label: 'Meeting done',      stage: 'mtg_done',       tone: 'indigo' },
   { k: 'docs',           label: 'Docs awaited',      stage: 'docs',           tone: 'cyan' },
@@ -21,7 +22,8 @@ const GUIDE = {
   not_answering: 'Phone rang, nobody picked up',
   no_response: 'Not reachable, switched off, or did not respond',
   callback: 'Asked to be contacted again later',
-  opportunity: 'Interested; a funding or rating need identified',
+  opportunity: 'A real funding need identified (loan, working capital, refinance etc.)',
+  opp_rating: 'A credit rating need identified',
   mtg_sched: 'Date and time fixed for a meeting or call',
   mtg_done: 'Meeting held; next step goes in remarks',
   docs: 'Awaiting documents or information from the client',
@@ -34,7 +36,8 @@ const STAGES = [
   { k: 'new',            label: 'New lead',          tone: 'grey' },
   { k: 'attempting',     label: 'Trying to reach',   tone: 'grey' },
   { k: 'callback',       label: 'Call back',         tone: 'blue' },
-  { k: 'opportunity',    label: 'Opportunity',       tone: 'teal' },
+  { k: 'opportunity',    label: 'Funding opportunity', tone: 'teal' },
+  { k: 'opp_rating',     label: 'Rating opportunity',  tone: 'orchid' },
   { k: 'mtg_sched',      label: 'Meeting scheduled', tone: 'violet' },
   { k: 'mtg_done',       label: 'Meeting done',      tone: 'indigo' },
   { k: 'docs',           label: 'Docs awaited',      tone: 'cyan' },
@@ -46,7 +49,7 @@ const STAGES = [
 ];
 const STG = Object.fromEntries(STAGES.map((s, i) => [s.k, { ...s, rank: i }]));
 const NOT_CONNECTED = new Set(['not_answering', 'no_response']);
-const POSITIVE = new Set(['callback', 'opportunity', 'mtg_sched', 'mtg_done', 'docs', 'proposal', 'won']);
+const POSITIVE = new Set(['callback', 'opportunity', 'opp_rating', 'mtg_sched', 'mtg_done', 'docs', 'proposal', 'won']);
 const REQS = ['Term loan', 'Working capital (CC/OD)', 'WCTL', 'Project finance', 'Refinance / takeover', 'LAP', 'Warehouse receipt finance',
   'Supply chain / bill discounting', 'Trade finance / LC-BG', 'NCD / bonds', 'Credit rating', 'IPO / equity', 'Other'];
 const SOURCES = ['Cold call', 'Rating action list', 'Referral', 'Ex-banker network', 'Inbound', 'LinkedIn', 'Existing relationship', 'Other'];
@@ -621,7 +624,7 @@ VIEWS.followups = {
       ['Next 7 days', withDate.filter(c => c.next_follow_up > addDays(t, 1) && c.next_follow_up <= wkEnd)],
       ['Later', withDate.filter(c => c.next_follow_up > wkEnd)],
     ];
-    const noDate = cos.filter(c => !c.next_follow_up && ['callback', 'opportunity', 'mtg_done', 'docs', 'proposal', 'attempting'].includes(c.stage))
+    const noDate = cos.filter(c => !c.next_follow_up && ['callback', 'opportunity', 'opp_rating', 'mtg_done', 'docs', 'proposal', 'attempting'].includes(c.stage))
       .sort((a, b) => String(la.get(b.id)?.call_date || '').localeCompare(String(la.get(a.id)?.call_date || '')));
     const mtgs = cos.filter(c => c.meeting_date && c.meeting_date >= t).sort((a, b) => a.meeting_date.localeCompare(b.meeting_date));
     $('#view').innerHTML = `
@@ -646,7 +649,7 @@ function repRange() {
 }
 const REP_COLS = [
   ['Calls', a => true], ['Connected', a => !NOT_CONNECTED.has(a.outcome)], ['Call back', a => a.outcome === 'callback'],
-  ['Opportunity', a => a.outcome === 'opportunity'], ['Mtg sched.', a => a.outcome === 'mtg_sched'], ['Mtg done', a => a.outcome === 'mtg_done'],
+  ['Funding opp.', a => a.outcome === 'opportunity'], ['Rating opp.', a => a.outcome === 'opp_rating'], ['Mtg sched.', a => a.outcome === 'mtg_sched'], ['Mtg done', a => a.outcome === 'mtg_done'],
   ['Docs awaited', a => a.outcome === 'docs'], ['Proposal', a => a.outcome === 'proposal'], ['Mandate', a => a.outcome === 'won'],
   ['No req.', a => a.outcome === 'no_req'], ['Not interested', a => a.outcome === 'not_interested'], ['Not reached', a => NOT_CONNECTED.has(a.outcome)],
   ['Profile shared', a => !!a.profile_shared],
@@ -722,7 +725,8 @@ function summaryText() {
     `*AAS BD update, ${label}*${UI.reports.by ? ' (' + UI.reports.by + ')' : ''}`,
     `Calls: ${rows.length} of ${target} target (${target ? Math.round(rows.length / target * 100) : 0}%)`,
     `Connected: ${rows.filter(a => !NOT_CONNECTED.has(a.outcome)).length}`,
-    `Call backs: ${c('callback')}, Opportunities: ${c('opportunity')}`,
+    `Call backs: ${c('callback')}`,
+    `Opportunities: ${c('opportunity')} funding, ${c('opp_rating')} rating`,
     `Meetings scheduled: ${c('mtg_sched')}, Meetings done: ${c('mtg_done')}`,
     `Proposals sent: ${c('proposal')}, Mandates: ${c('won')}`,
     `No requirement: ${c('no_req')}, Not interested: ${c('not_interested')}`,
@@ -986,6 +990,7 @@ async function saveCall(M, m, another) {
     }
     const req = v('#lc-req'), amt = v('#lc-amt');
     if (req) co.requirement = req;
+    else if (M.outcome === 'opp_rating' && !co.requirement) co.requirement = 'Credit rating';
     if (amt) co.amount_cr = Number(amt);
     const fu = v('#lc-fu') || null, fut = v('#lc-fut') || null;
     const latest = lastAct(co.id);
@@ -1183,7 +1188,7 @@ function mapStatus(s) {
   if (/not\s*answer|no\s*answer|nr\b/.test(s)) return 'not_answering';
   if (/no\s*response|not\s*reach|switch/.test(s)) return 'no_response';
   if (/call\s*back|callback/.test(s)) return 'callback';
-  if (/opportun|interested/.test(s)) return 'opportunity';
+  if (/opportun|interested/.test(s)) return /rating/.test(s) ? 'opp_rating' : 'opportunity';
   if (/proposal|term\s*sheet/.test(s)) return 'proposal';
   if (/follow|docs|document/.test(s)) return 'docs';
   if (/mandate|won|signed/.test(s)) return 'won';

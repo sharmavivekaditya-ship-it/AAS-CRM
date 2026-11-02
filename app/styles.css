@@ -30,6 +30,7 @@
   --t-green: #2e7d32;
   --t-stone: #8a6d4e;
   --t-red: #b3261e;
+  --t-orchid: #93407f;
 
   --f-display: "Lexend", "Figtree", system-ui, sans-serif;
   --f-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -42,7 +43,7 @@
     --bg: #161412; --surface: #1f1c19; --sunk: #191714; --ink: #efe9e2; --ink-2: #cfc7be;
     --muted: #9d9389; --line: #322d28; --line-2: #443d36; --focus: #efe9e2; --on-ink: #161412; --peach: #3a2a1c;
     --t-grey: #a49d95; --t-blue: #7fb0e6; --t-teal: #5cc2b1; --t-violet: #b3a0ee; --t-indigo: #9aa8ec;
-    --t-cyan: #5cc6d4; --t-olive: #b9c46a; --t-green: #7cc983; --t-stone: #cdaa85; --t-red: #f08b84;
+    --t-cyan: #5cc6d4; --t-olive: #b9c46a; --t-green: #7cc983; --t-stone: #cdaa85; --t-red: #f08b84; --t-orchid: #df9ccf;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.4);
     color-scheme: dark;
   }
@@ -51,7 +52,7 @@
   --bg: #161412; --surface: #1f1c19; --sunk: #191714; --ink: #efe9e2; --ink-2: #cfc7be;
   --muted: #9d9389; --line: #322d28; --line-2: #443d36; --focus: #efe9e2; --on-ink: #161412; --peach: #3a2a1c;
   --t-grey: #a49d95; --t-blue: #7fb0e6; --t-teal: #5cc2b1; --t-violet: #b3a0ee; --t-indigo: #9aa8ec;
-  --t-cyan: #5cc6d4; --t-olive: #b9c46a; --t-green: #7cc983; --t-stone: #cdaa85; --t-red: #f08b84;
+  --t-cyan: #5cc6d4; --t-olive: #b9c46a; --t-green: #7cc983; --t-stone: #cdaa85; --t-red: #f08b84; --t-orchid: #df9ccf;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.4);
   color-scheme: dark;
 }
@@ -200,7 +201,7 @@ label.f .hint { font-weight: 400; color: var(--muted); }
 .chip.plain::before { display: none; }
 .tone-grey { --c: var(--t-grey); } .tone-blue { --c: var(--t-blue); } .tone-teal { --c: var(--t-teal); }
 .tone-violet { --c: var(--t-violet); } .tone-indigo { --c: var(--t-indigo); } .tone-cyan { --c: var(--t-cyan); }
-.tone-olive { --c: var(--t-olive); } .tone-green { --c: var(--t-green); } .tone-stone { --c: var(--t-stone); } .tone-red { --c: var(--t-red); }
+.tone-olive { --c: var(--t-olive); } .tone-green { --c: var(--t-green); } .tone-stone { --c: var(--t-stone); } .tone-red { --c: var(--t-red); } .tone-orchid { --c: var(--t-orchid); }
 .due { font-size: 12px; font-weight: 600; white-space: nowrap; }
 .due.over { color: var(--t-red); }
 .due.today { color: var(--ink); }
