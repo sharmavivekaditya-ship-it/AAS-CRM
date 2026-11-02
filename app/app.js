@@ -827,6 +827,7 @@ function batchStats(bid, idx) {
   const st = { total: ls.length, new: 0, called: 0, positive: 0, dropped: 0 };
   ls.forEach(l => { const k = leadState(l, idx).k; st[k]++; });
   st.reached = st.called + st.positive;
+  st.open = st.total - st.dropped;
   return st;
 }
 const sortedBatches = () => [...S.batches.values()].sort((a, b) => String(b.provided_on).localeCompare(String(a.provided_on)) || String(b.created_at).localeCompare(String(a.created_at)));
@@ -858,10 +859,10 @@ async function ensureLeadCompany(l) {
 function leadsTodayPanel() {
   const b = sortedBatches()[0]; if (!b) return '';
   const st = batchStats(b.id);
-  const pct = st.total ? Math.round((st.reached + st.dropped) / st.total * 100) : 0;
+  const pct = st.open ? Math.round(st.reached / st.open * 100) : 0;
   return `<section class="panel"><div class="ph"><h2>Leads</h2><a class="btn sm" href="#leads">Open leads</a></div>
     <div class="pb stack" style="gap:6px"><div><strong>${esc(b.name)}</strong> <span class="small muted">· given ${esc(fShort(b.provided_on))}, ${ago(b.provided_on)}</span></div>
-    <div class="small">${st.reached} of ${st.total} called · <strong>${st.new} not called yet</strong>${st.positive ? ` · ${st.positive} positive` : ''}</div>
+    <div class="small">${st.reached} of ${st.open} called · <strong>${st.new} not called yet</strong>${st.positive ? ` · ${st.positive} positive` : ''}</div>
     <div class="meter"><i style="width:${pct}%"></i></div></div></section>`;
 }
 VIEWS.leads = {
@@ -870,7 +871,7 @@ VIEWS.leads = {
     return `<div id="lb"></div>
       <div class="filters">
         <div class="seg" role="group" aria-label="Priority">${[['', 'All'], ['A', 'A'], ['B', 'B'], ['C', 'C']].map(([k, l]) => `<button data-act="lpri" data-k="${k}" class="${u.pri === k ? 'on' : ''}">${k ? 'Priority ' + l : l}</button>`).join('')}</div>
-        <select id="ld-st" aria-label="Status"><option value="">All leads</option><option value="new">Not called</option><option value="called">Called</option><option value="positive">Positive</option><option value="dropped">Not relevant</option></select>
+        <select id="ld-st" aria-label="Status"><option value="">All open leads</option><option value="new">Not called</option><option value="called">Called</option><option value="positive">Positive</option><option value="dropped">Not relevant (hidden)</option></select>
         <input type="search" id="ld-q" placeholder="Filter by company, place, person" value="${esc(u.q)}" style="width:min(260px,100%)">
         <span style="flex:1"></span>
         ${isAdmin() ? `<button class="btn primary" data-act="uploadleads">${ICON.plus}Upload leads Excel</button>` : ''}
@@ -893,21 +894,21 @@ VIEWS.leads = {
       return;
     }
     if (!u.batch || !S.batches.has(u.batch)) u.batch = bs[0].id;
-    $('#lb').innerHTML = `<div class="batches">${bs.map(b => { const st = batchStats(b.id, idx); const pct = st.total ? Math.round((st.reached + st.dropped) / st.total * 100) : 0;
+    $('#lb').innerHTML = `<div class="batches">${bs.map(b => { const st = batchStats(b.id, idx); const pct = st.open ? Math.round(st.reached / st.open * 100) : 0;
       return `<button class="batch ${b.id === u.batch ? 'on' : ''}" data-act="batch" data-id="${b.id}">
         <span class="eyebrow">Given ${esc(fMed(b.provided_on))} · ${ago(b.provided_on)}</span>
         <strong>${esc(b.name)}</strong>
-        <span class="small">${st.reached} of ${st.total} called · ${st.new} not called${st.positive ? ` · ${st.positive} positive` : ''}</span>
+        <span class="small">${st.reached} of ${st.open} called · ${st.new} not called${st.positive ? ` · ${st.positive} positive` : ''}${st.dropped ? ` · ${st.dropped} not relevant` : ''}</span>
         <span class="meter"><i style="width:${pct}%"></i></span></button>`; }).join('')}</div>`;
     const b = S.batches.get(u.batch); const q = u.q.trim().toLowerCase();
     let rows = [...S.leads.values()].filter(l => l.batch_id === b.id).map(l => ({ l, st: leadState(l, idx) }));
     rows = rows.filter(({ l, st }) => (!u.pri || String(l.priority || '').toUpperCase() === u.pri)
-      && (!u.status || st.k === u.status || (u.status === 'called' && st.k === 'positive'))
+      && (u.status ? (st.k === u.status || (u.status === 'called' && st.k === 'positive')) : st.k !== 'dropped')
       && (!q || [l.name, l.location, l.industry, l.project, ...(l.contacts || []).map(p => p.name + ' ' + p.phone)].some(x => String(x || '').toLowerCase().includes(q))));
     rows.sort((a, b2) => String(a.l.priority || 'Z').localeCompare(String(b2.l.priority || 'Z')) || (a.l.rank ?? 9999) - (b2.l.rank ?? 9999));
     const by = b.created_by ? personName(b.created_by) : '';
     $('#vb').innerHTML = `<section class="panel"><div class="ph"><div><h2>${esc(b.name)}</h2><div class="small muted" style="margin-top:2px">Given on ${esc(fDay(b.provided_on))}${by ? ' by ' + esc(by) : ''}${b.source_file ? ' · ' + esc(b.source_file) : ''}${b.notes ? ' · ' + esc(b.notes) : ''}</div></div>
-      <span class="row small"><strong>${plural(rows.length, 'lead')}</strong>${isAdmin() ? `<span><button class="btn sm ghost danger" data-act="delbatch-ask" data-id="${b.id}">Delete batch</button></span>` : ''}</span></div>
+      <span class="row small"><strong>${plural(rows.length, 'lead')}</strong>${!u.status && batchStats(b.id, idx).dropped ? `<button class="btn sm ghost" data-act="showdropped">Show ${batchStats(b.id, idx).dropped} not relevant</button>` : ''}${isAdmin() ? `<span><button class="btn sm ghost danger" data-act="delbatch-ask" data-id="${b.id}">Delete batch</button></span>` : ''}</span></div>
       <div class="pb flush tablewrap">${rows.length ? `<table class="t"><thead><tr><th class="n">#</th><th>Pri.</th><th>Company</th><th>Project</th><th>Contact</th><th>Status</th><th></th></tr></thead><tbody>
       ${rows.map(({ l, st }) => { const p = (l.contacts || []).find(x => x.phone) || (l.contacts || [])[0];
         return `<tr class="click" data-act="openlead" data-id="${l.id}"><td class="n muted">${esc(l.rank ?? '')}</td><td>${priChip(l.priority)}</td>
@@ -935,6 +936,7 @@ function renderLeadDrawer() {
         ${st.k === 'dropped' ? `<button class="btn sm" data-act="leadrestore" data-id="${l.id}">Restore lead</button>` : `<button class="btn primary sm" data-act="leadlog" data-id="${l.id}">${ICON.plus}Log call</button>`}
         ${st.c ? `<button class="btn sm" data-act="leadco" data-id="${l.id}">Open company page</button>` : ''}
         ${st.k === 'dropped' ? '' : `<button class="btn sm ghost" data-act="leaddrop" data-id="${l.id}">Not relevant</button>`}
+        <span id="ld-del"><button class="btn sm ghost danger" data-act="leaddel-ask" data-id="${l.id}">Delete lead</button></span>
       </div></div>
     <div class="db">
       <div class="followbox"><div><div class="eyebrow">Status</div><div style="margin-top:4px">${leadStatusHTML(st, false)}
@@ -1616,7 +1618,10 @@ document.addEventListener('click', async e => {
     case 'openlead': return openLead(id);
     case 'leadlog': try { const c = await ensureLeadCompany(S.leads.get(id)); closeModal(); openLog({ companyId: c.id }); } catch (err) { fail(err); } return;
     case 'leadco': { const c = leadCompany(S.leads.get(id)); if (c) openDrawer(c.id); return; }
-    case 'leaddrop': try { await patchLead(id, { dropped: true }); toast('Marked as not relevant'); } catch (err) { fail(err); } return;
+    case 'leaddrop': try { await patchLead(id, { dropped: true }); closeDrawer(); toast('Removed from the list. Find it under “Not relevant” if needed.'); } catch (err) { fail(err); } return;
+    case 'showdropped': UI.leads.status = 'dropped'; $('#ld-st').value = 'dropped'; return VIEWS.leads.body();
+    case 'leaddel-ask': $('#ld-del').innerHTML = `<span class="small">Delete permanently?</span> <button class="btn sm danger solid" data-act="leaddel" data-id="${id}">Delete</button>`; return;
+    case 'leaddel': try { await delRow('leads', id); S.leads.delete(id); closeDrawer(); scheduleRender(); toast('Lead deleted'); } catch (err) { fail(err); } return;
     case 'leadrestore': try { await patchLead(id, { dropped: false }); toast('Lead restored'); } catch (err) { fail(err); } return;
     case 'batch': UI.leads.batch = id; return VIEWS.leads.body();
     case 'lpri': UI.leads.pri = el.dataset.k; $$('[data-act="lpri"]').forEach(b => b.classList.toggle('on', b === el)); return VIEWS.leads.body();

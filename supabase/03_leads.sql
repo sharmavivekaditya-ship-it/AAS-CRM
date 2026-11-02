@@ -64,8 +64,8 @@ create policy batches_admin_update on public.lead_batches for update to authenti
 drop policy if exists batches_admin_delete on public.lead_batches;
 create policy batches_admin_delete on public.lead_batches for delete to authenticated using (public.is_admin());
 
--- Leads: everyone reads and updates (link to company, mark not relevant);
--- only admin adds or deletes.
+-- Leads: everyone reads, updates and deletes single leads;
+-- only admin adds (uploads) leads.
 drop policy if exists leads_read on public.leads;
 create policy leads_read on public.leads for select to authenticated using (public.is_member());
 drop policy if exists leads_admin_insert on public.leads;
@@ -73,7 +73,7 @@ create policy leads_admin_insert on public.leads for insert to authenticated wit
 drop policy if exists leads_update on public.leads;
 create policy leads_update on public.leads for update to authenticated using (public.is_member()) with check (public.is_member());
 drop policy if exists leads_admin_delete on public.leads;
-create policy leads_admin_delete on public.leads for delete to authenticated using (public.is_admin());
+create policy leads_admin_delete on public.leads for delete to authenticated using (public.is_member());
 
 do $$
 begin
