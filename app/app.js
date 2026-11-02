@@ -52,11 +52,11 @@ const NOT_CONNECTED = new Set(['not_answering', 'no_response']);
 const POSITIVE = new Set(['callback', 'opportunity', 'opp_rating', 'mtg_sched', 'mtg_done', 'docs', 'proposal', 'won']);
 const REQS = ['Term loan', 'Working capital (CC/OD)', 'WCTL', 'Project finance', 'Refinance / takeover', 'LAP', 'Warehouse receipt finance',
   'Supply chain / bill discounting', 'Trade finance / LC-BG', 'NCD / bonds', 'Credit rating', 'IPO / equity', 'Other'];
-const SOURCES = ['Cold call', 'Rating action list', 'Referral', 'Ex-banker network', 'Inbound', 'LinkedIn', 'Existing relationship', 'Other'];
+const SOURCES = ['Cold call', 'Project leads', 'Rating action list', 'Referral', 'Ex-banker network', 'Inbound', 'LinkedIn', 'Existing relationship', 'Other'];
 const SHARED = { '': 'Not shared', whatsapp: 'On WhatsApp', email: 'On email', both: 'WhatsApp and email' };
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const ROUTES = {
-  today: 'Today', calls: 'Call log', pipeline: 'Pipeline', companies: 'Companies',
+  today: 'Today', leads: 'Leads', calls: 'Call log', pipeline: 'Pipeline', companies: 'Companies',
   followups: 'Follow-ups', reports: 'Reports', team: 'Team logins', settings: 'Settings & data',
 };
 const ADMIN_ROUTES = new Set(['team', 'settings']);
@@ -112,12 +112,14 @@ const S = {
   companies: new Map(), acts: new Map(), profiles: new Map(),
   settings: { daily_target: 10, workdays: [1, 2, 3, 4, 5], holidays: [] },
   route: 'today', drawerId: null, chan: null,
+  leads: new Map(), batches: new Map(), leadId: null, leadsMissing: false,
 };
 const UI = {
   calls: { range: 'week', from: '', to: '', outcome: '', by: '', q: '' },
   companies: { q: '', stage: '', source: '', sort: 'recent' },
   pipeline: { q: '' },
   reports: { mode: 'week', anchor: today(), by: '' },
+  leads: { batch: '', pri: '', status: '', q: '' },
 };
 const isAdmin = () => S.me?.role === 'admin';
 const meId = () => S.me?.id;
@@ -237,7 +239,7 @@ async function startApp(session) {
 function teardown() {
   if (S.chan) { try { sb.removeChannel(S.chan); } catch (e) { /* ignore */ } }
   S.chan = null; S.me = null; S.loaded = false; S.drawerId = null;
-  S.companies.clear(); S.acts.clear(); S.profiles.clear();
+  S.companies.clear(); S.acts.clear(); S.profiles.clear(); S.leads.clear(); S.batches.clear(); S.leadId = null;
   $('#layer')?.remove();
 }
 
@@ -262,6 +264,10 @@ async function loadAll() {
     S.acts = new Map(acts.map(r => [r.id, r]));
     S.profiles = new Map((profs.data || []).map(r => [r.id, r]));
     if (set.data) S.settings = set.data;
+    try {
+      const [bs, ls] = await Promise.all([fetchAll('lead_batches'), fetchAll('leads')]);
+      S.batches = new Map(bs.map(r => [r.id, r])); S.leads = new Map(ls.map(r => [r.id, r])); S.leadsMissing = false;
+    } catch (e) { S.leadsMissing = true; }
     S.loaded = true;
     render();
   } catch (e) {
@@ -270,13 +276,16 @@ async function loadAll() {
 }
 
 function subscribe() {
-  const apply = (map) => p => {
+  const apply = (key) => p => {
+    const map = S[key];
     if (p.eventType === 'DELETE') map.delete(p.old.id); else map.set(p.new.id, p.new);
     scheduleRender();
   };
   S.chan = sb.channel('aas-crm-live')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'companies' }, apply(S.companies))
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'activities' }, apply(S.acts))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'companies' }, apply('companies'))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'activities' }, apply('acts'))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, apply('leads'))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'lead_batches' }, apply('batches'))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, p => { if (p.new) S.settings = p.new; scheduleRender(); })
     .subscribe(status => {
       S.sync = status === 'SUBSCRIBED' ? 'live' : (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status) ? 'off' : 'wait');
@@ -315,7 +324,7 @@ function friendlyErr(e) {
 
 /* ================= Shell ================= */
 function navHTML() {
-  const links = ['today', 'calls', 'pipeline', 'companies', 'followups', 'reports'];
+  const links = ['today', 'leads', 'calls', 'pipeline', 'companies', 'followups', 'reports'];
   const adm = ['team', 'settings'];
   const a = k => `<a href="#${k}" data-nav="${k}" class="${S.route === k ? 'on' : ''}"><span>${ROUTES[k]}</span><span class="count" data-count="${k}" hidden></span></a>`;
   return `<nav class="nav">${links.map(a).join('')}${isAdmin() ? `<div class="eyebrow nav-label">Admin</div>${adm.map(a).join('')}` : ''}</nav>`;
@@ -364,7 +373,7 @@ function render() {
   if (shownRoute !== S.route) { $('#view').innerHTML = v.shell ? v.shell() : '<div id="vb"></div>'; shownRoute = S.route; v.wire?.(); }
   v.body();
   updateCounts();
-  if (S.drawerId) renderDrawer();
+  if (S.drawerId) renderDrawer(); else if (S.leadId) renderLeadDrawer();
 }
 function updateCounts() {
   const t = today(); let over = 0, due = 0;
@@ -372,6 +381,9 @@ function updateCounts() {
   $$('[data-count="followups"]').forEach(el => { el.hidden = !(over + due); el.textContent = over + due; el.classList.toggle('alert', over > 0); });
   const n = [...S.acts.values()].filter(a => a.call_date === t).length;
   $$('[data-count="calls"]').forEach(el => { el.hidden = !n; el.textContent = n; });
+  const idx = coByNorm(); let fresh = 0;
+  for (const l of S.leads.values()) if (leadState(l, idx).k === 'new') fresh++;
+  $$('[data-count="leads"]').forEach(el => { el.hidden = !fresh; el.textContent = fresh; });
 }
 window.addEventListener('hashchange', () => {
   const h = location.hash.slice(1);
@@ -440,6 +452,7 @@ VIEWS.today = {
               : `<div class="empty"><strong>No follow-ups due today</strong><span>Call backs you schedule while logging calls appear here on the day.</span></div>`}</div></section>
         </div>
         <div class="stack">
+          ${leadsTodayPanel()}
           <section class="panel"><div class="ph"><h2>Upcoming meetings</h2></div>
             <div class="pb flush list">${mtgs.length ? mtgs.slice(0, 6).map(c => `<div class="li"><span class="t" data-act="open" data-id="${c.id}">${esc(c.name)}</span><div class="r">${dueHTML(c.meeting_date, c.meeting_time)}</div><span class="s">${esc(primaryContact(c)?.name || '')}</span></div>`).join('')
               : `<div class="empty"><span>No meetings fixed yet. Pick “Meeting scheduled” when logging a call to add one.</span></div>`}</div></section>
@@ -795,9 +808,269 @@ function setImpMode(m) {
   $('#imp-out').innerHTML = ''; $('#imp-go').disabled = true;
 }
 
+
+/* ================= Leads ================= */
+const LEAD_POSITIVE = new Set(['opportunity', 'opp_rating', 'mtg_sched', 'mtg_done', 'docs', 'proposal', 'won']);
+function coByNorm() { const m = new Map(); for (const c of S.companies.values()) m.set(norm(c.name), c); return m; }
+function leadCompany(l, idx) { if (!l) return null; return (l.company_id && S.companies.get(l.company_id)) || (idx || coByNorm()).get(norm(l.name)) || null; }
+function leadState(l, idx) {
+  const b = S.batches.get(l.batch_id); const since = b?.provided_on || '0000-00-00';
+  const c = leadCompany(l, idx);
+  const acts = c ? actsFor(c.id).filter(a => a.call_date >= since) : [];
+  if (l.dropped) return { k: 'dropped', c, acts };
+  if (!acts.length) return { k: 'new', c, acts };
+  const last = acts[0], first = acts[acts.length - 1];
+  return { k: LEAD_POSITIVE.has(last.outcome) ? 'positive' : 'called', c, acts, last, first };
+}
+function batchStats(bid, idx) {
+  const ls = [...S.leads.values()].filter(l => l.batch_id === bid);
+  const st = { total: ls.length, new: 0, called: 0, positive: 0, dropped: 0 };
+  ls.forEach(l => { const k = leadState(l, idx).k; st[k]++; });
+  st.reached = st.called + st.positive;
+  return st;
+}
+const sortedBatches = () => [...S.batches.values()].sort((a, b) => String(b.provided_on).localeCompare(String(a.provided_on)) || String(b.created_at).localeCompare(String(a.created_at)));
+const ago = d => { const n = diffDays(d, today()); return n <= 0 ? 'today' : n === 1 ? 'yesterday' : `${n} days ago`; };
+const priChip = p => p ? `<span class="pri pri-${esc(String(p).toUpperCase())}" title="Priority ${esc(p)}">${esc(p)}</span>` : '';
+const crore = v => (v === null || v === undefined || v === '') ? '' : `₹${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })} Cr`;
+function leadStatusHTML(st, small = true) {
+  if (st.k === 'dropped') return '<span class="chip plain tone-grey">Not relevant</span>';
+  if (st.k === 'new') return '<span class="chip plain tone-grey">Not called</span>';
+  return `${chip(st.last.outcome)}${small ? `<div class="small muted">${plural(st.acts.length, 'call')} · last ${esc(fShort(st.last.call_date))}</div>` : ''}`;
+}
+async function patchLead(id, patch) {
+  const { data, error } = await sb.from('leads').update(patch).eq('id', id).select().single();
+  if (error) throw error;
+  S.leads.set(data.id, data); scheduleRender(); return data;
+}
+async function ensureLeadCompany(l) {
+  let c = leadCompany(l);
+  if (!c) {
+    const lenders = [...new Set((l.facilities || []).map(f => f.lender).filter(Boolean))].join(', ');
+    const notes = [l.trigger_note && ('Lead: ' + l.trigger_note), l.aas_solution && ('AAS angle: ' + l.aas_solution),
+      l.project && ('Project: ' + l.project + (l.project_cr ? ` (${crore(l.project_cr)}${l.project_stage ? ', ' + l.project_stage : ''})` : ''))].filter(Boolean).join('\n');
+    c = await saveCompany({ id: uuid(), name: l.name, stage: 'new', source: 'Project leads', website: l.website || null, sector: l.industry || null,
+      city: l.location || null, banks: lenders || null, notes: notes || null, contacts: (l.contacts || []).filter(p => p.name || p.phone) });
+  }
+  if (l.company_id !== c.id) await patchLead(l.id, { company_id: c.id });
+  return c;
+}
+function leadsTodayPanel() {
+  const b = sortedBatches()[0]; if (!b) return '';
+  const st = batchStats(b.id);
+  const pct = st.total ? Math.round((st.reached + st.dropped) / st.total * 100) : 0;
+  return `<section class="panel"><div class="ph"><h2>Leads</h2><a class="btn sm" href="#leads">Open leads</a></div>
+    <div class="pb stack" style="gap:6px"><div><strong>${esc(b.name)}</strong> <span class="small muted">· given ${esc(fShort(b.provided_on))}, ${ago(b.provided_on)}</span></div>
+    <div class="small">${st.reached} of ${st.total} called · <strong>${st.new} not called yet</strong>${st.positive ? ` · ${st.positive} positive` : ''}</div>
+    <div class="meter"><i style="width:${pct}%"></i></div></div></section>`;
+}
+VIEWS.leads = {
+  shell() {
+    const u = UI.leads;
+    return `<div id="lb"></div>
+      <div class="filters">
+        <div class="seg" role="group" aria-label="Priority">${[['', 'All'], ['A', 'A'], ['B', 'B'], ['C', 'C']].map(([k, l]) => `<button data-act="lpri" data-k="${k}" class="${u.pri === k ? 'on' : ''}">${k ? 'Priority ' + l : l}</button>`).join('')}</div>
+        <select id="ld-st" aria-label="Status"><option value="">All leads</option><option value="new">Not called</option><option value="called">Called</option><option value="positive">Positive</option><option value="dropped">Not relevant</option></select>
+        <input type="search" id="ld-q" placeholder="Filter by company, place, person" value="${esc(u.q)}" style="width:min(260px,100%)">
+        <span style="flex:1"></span>
+        ${isAdmin() ? `<button class="btn primary" data-act="uploadleads">${ICON.plus}Upload leads Excel</button>` : ''}
+      </div><div id="vb"></div>`;
+  },
+  wire() {
+    $('#ld-st').value = UI.leads.status;
+    $('#ld-st').addEventListener('change', e => { UI.leads.status = e.target.value; this.body(); });
+    $('#ld-q').addEventListener('input', debounce(e => { UI.leads.q = e.target.value; this.body(); }, 150));
+  },
+  body() {
+    const u = UI.leads; const idx = coByNorm();
+    const bs = sortedBatches();
+    if (S.leadsMissing) {
+      $('#lb').innerHTML = ''; $('#vb').innerHTML = `<div class="banner">The Leads section isn't set up in the database yet. ${isAdmin() ? 'Run <code>supabase/03_leads.sql</code> in the Supabase SQL Editor, then refresh.' : 'Please tell Vivek.'}</div>`; return;
+    }
+    if (!bs.length) {
+      $('#lb').innerHTML = '';
+      $('#vb').innerHTML = `<section class="panel"><div class="empty"><strong>No leads yet</strong><span>${isAdmin() ? 'Upload a leads Excel and it will show here as a batch, with the date it was given.' : 'When Vivek uploads a leads list, it will show here.'}</span>${isAdmin() ? `<button class="btn primary" data-act="uploadleads">${ICON.plus}Upload leads Excel</button>` : ''}</div></section>`;
+      return;
+    }
+    if (!u.batch || !S.batches.has(u.batch)) u.batch = bs[0].id;
+    $('#lb').innerHTML = `<div class="batches">${bs.map(b => { const st = batchStats(b.id, idx); const pct = st.total ? Math.round((st.reached + st.dropped) / st.total * 100) : 0;
+      return `<button class="batch ${b.id === u.batch ? 'on' : ''}" data-act="batch" data-id="${b.id}">
+        <span class="eyebrow">Given ${esc(fMed(b.provided_on))} · ${ago(b.provided_on)}</span>
+        <strong>${esc(b.name)}</strong>
+        <span class="small">${st.reached} of ${st.total} called · ${st.new} not called${st.positive ? ` · ${st.positive} positive` : ''}</span>
+        <span class="meter"><i style="width:${pct}%"></i></span></button>`; }).join('')}</div>`;
+    const b = S.batches.get(u.batch); const q = u.q.trim().toLowerCase();
+    let rows = [...S.leads.values()].filter(l => l.batch_id === b.id).map(l => ({ l, st: leadState(l, idx) }));
+    rows = rows.filter(({ l, st }) => (!u.pri || String(l.priority || '').toUpperCase() === u.pri)
+      && (!u.status || st.k === u.status || (u.status === 'called' && st.k === 'positive'))
+      && (!q || [l.name, l.location, l.industry, l.project, ...(l.contacts || []).map(p => p.name + ' ' + p.phone)].some(x => String(x || '').toLowerCase().includes(q))));
+    rows.sort((a, b2) => String(a.l.priority || 'Z').localeCompare(String(b2.l.priority || 'Z')) || (a.l.rank ?? 9999) - (b2.l.rank ?? 9999));
+    const by = b.created_by ? personName(b.created_by) : '';
+    $('#vb').innerHTML = `<section class="panel"><div class="ph"><div><h2>${esc(b.name)}</h2><div class="small muted" style="margin-top:2px">Given on ${esc(fDay(b.provided_on))}${by ? ' by ' + esc(by) : ''}${b.source_file ? ' · ' + esc(b.source_file) : ''}${b.notes ? ' · ' + esc(b.notes) : ''}</div></div>
+      <span class="row small"><strong>${plural(rows.length, 'lead')}</strong>${isAdmin() ? `<span><button class="btn sm ghost danger" data-act="delbatch-ask" data-id="${b.id}">Delete batch</button></span>` : ''}</span></div>
+      <div class="pb flush tablewrap">${rows.length ? `<table class="t"><thead><tr><th class="n">#</th><th>Pri.</th><th>Company</th><th>Project</th><th>Contact</th><th>Status</th><th></th></tr></thead><tbody>
+      ${rows.map(({ l, st }) => { const p = (l.contacts || []).find(x => x.phone) || (l.contacts || [])[0];
+        return `<tr class="click" data-act="openlead" data-id="${l.id}"><td class="n muted">${esc(l.rank ?? '')}</td><td>${priChip(l.priority)}</td>
+          <td class="co">${esc(l.name)}<div class="small muted">${esc([l.location, l.industry].filter(Boolean).join(' · '))}</div></td>
+          <td>${l.project_cr ? `<strong class="num">${crore(l.project_cr)}</strong>` : ''}<div class="small muted">${esc(l.project_stage || '')}</div></td>
+          <td>${p ? `${esc(p.name || '')}${p.designation ? `<div class="small muted">${esc(p.designation)}</div>` : ''}${p.phone ? `<div class="small">${phoneHTML(p.phone)}</div>` : '<div class="small muted">No number</div>'}` : '<span class="small muted">No contact</span>'}</td>
+          <td>${leadStatusHTML(st)}</td>
+          <td class="n">${st.k === 'dropped' ? '' : `<button class="btn sm" data-act="leadlog" data-id="${l.id}">Log call</button>`}</td></tr>`; }).join('')}
+      </tbody></table>` : '<div class="empty"><strong>No leads match</strong><span>Change the filters above.</span></div>'}</div></section>`;
+  },
+};
+function openLead(id) { S.drawerId = null; S.leadId = id; renderLeadDrawer(); }
+function renderLeadDrawer() {
+  const l = S.leads.get(S.leadId); if (!l) { closeDrawer(); return; }
+  const b = S.batches.get(l.batch_id); const st = leadState(l);
+  let dr = $('#drawer');
+  if (!dr) { $('#layer').insertAdjacentHTML('beforeend', '<div class="scrim" id="drawer-scrim" data-act="closedrawer"></div><aside class="drawer" id="drawer" role="dialog" aria-modal="true"></aside>'); dr = $('#drawer'); }
+  const kv = (k, v) => v === null || v === undefined || v === '' ? '' : `<dt>${k}</dt><dd>${v}</dd>`;
+  const fac = l.facilities || [];
+  const facTot = fac.reduce((s2, f) => s2 + (Number(f.cr) || 0), 0);
+  dr.innerHTML = `<div class="dh">
+      <div class="row" style="justify-content:space-between;align-items:flex-start;flex-wrap:nowrap"><div style="min-width:0"><div class="eyebrow">${l.priority ? 'Priority ' + esc(l.priority) + ' lead · ' : 'Lead · '}${esc(b?.name || '')}</div><h2 style="font-size:20px;margin-top:2px">${esc(l.name)}</h2></div>
+        <button class="iconbtn" data-act="closedrawer" title="Close">${ICON.close}</button></div>
+      <div class="row">
+        ${st.k === 'dropped' ? `<button class="btn sm" data-act="leadrestore" data-id="${l.id}">Restore lead</button>` : `<button class="btn primary sm" data-act="leadlog" data-id="${l.id}">${ICON.plus}Log call</button>`}
+        ${st.c ? `<button class="btn sm" data-act="leadco" data-id="${l.id}">Open company page</button>` : ''}
+        ${st.k === 'dropped' ? '' : `<button class="btn sm ghost" data-act="leaddrop" data-id="${l.id}">Not relevant</button>`}
+      </div></div>
+    <div class="db">
+      <div class="followbox"><div><div class="eyebrow">Status</div><div style="margin-top:4px">${leadStatusHTML(st, false)}
+        <span class="small muted">${st.k === 'new' ? `Given ${esc(fShort(b?.provided_on))}, ${ago(b?.provided_on)}. Not called yet.` : st.k === 'dropped' ? 'Marked not relevant.' : `${plural(st.acts.length, 'call')} since ${esc(fShort(b?.provided_on))}. First call ${esc(fShort(st.first.call_date))} (${diffDays(b.provided_on, st.first.call_date)} days after it was given).`}</span></div>
+        ${st.last?.remarks ? `<div class="small" style="margin-top:6px">${esc(st.last.remarks)}</div>` : ''}</div></div>
+      ${l.trigger_note ? `<section><h3 style="margin-bottom:4px">Why this lead</h3><p style="margin:0">${esc(l.trigger_note)}</p></section>` : ''}
+      ${l.aas_solution ? `<section><h3 style="margin-bottom:4px">How AAS can help</h3><p style="margin:0">${esc(l.aas_solution)}</p></section>` : ''}
+      <section><h3 style="margin-bottom:4px">Contacts</h3>${(l.contacts || []).length ? l.contacts.map(p => `<div class="contact"><div><strong>${esc(p.name || 'Unnamed')}</strong>${p.designation ? ` <span class="muted small">${esc(p.designation)}</span>` : ''}</div><div></div>
+        <div class="small">${phoneHTML(p.phone)} ${p.email ? `<span class="phone"><span>${esc(p.email)}</span><button class="iconbtn" data-act="copy" data-text="${esc(p.email)}" title="Copy email">${ICON.copy}</button></span>` : ''}</div></div>`).join('') : '<p class="muted small">No contact given.</p>'}
+        ${l.phone_gap ? `<div class="note warn" style="margin-top:6px">Number issue: ${esc(l.phone_gap)}</div>` : ''}</section>
+      <section><h3 style="margin-bottom:8px">Project and company</h3><dl class="kv">
+        ${kv('Project', esc(l.project))}${kv('Project size', crore(l.project_cr))}${kv('Project stage', esc(l.project_stage))}${kv('Rating', esc(l.rating))}
+        ${kv('Turnover', crore(l.turnover_cr))}${kv('Bank limits', crore(l.bank_limits_cr))}${kv('Untied limits', crore(l.untied_cr))}
+        ${kv('Ownership', esc(l.ownership))}${kv('Industry', esc(l.industry))}${kv('Location', esc(l.location))}
+        ${kv('Website', l.website ? `<a href="${esc(/^https?:/.test(l.website) ? l.website : 'https://' + l.website)}" target="_blank" rel="noopener">${esc(l.website)}</a>` : '')}
+        ${kv('MD / head', esc(l.md))}${kv('CFO', esc(l.cfo))}${kv('Notes', esc(l.notes))}
+      </dl></section>
+      ${fac.length ? `<section><h3 style="margin-bottom:6px">Existing bank facilities <span class="muted small">${crore(facTot)} total</span></h3><div class="tablewrap"><table class="t"><thead><tr><th>Facility</th><th class="n">₹ Cr</th><th>Lender</th><th>Status</th></tr></thead><tbody>
+        ${fac.map(f => `<tr><td>${esc(f.facility || '')}</td><td class="n num">${esc(f.cr ?? '')}</td><td>${esc(f.lender || '')}</td><td class="small">${esc(f.status || '')}</td></tr>`).join('')}</tbody></table></div></section>` : ''}
+    </div>`;
+}
+
+/* ---------- Upload leads Excel (admin) ---------- */
+async function loadXLSX() {
+  if (window.XLSX) return;
+  await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; sc.onload = res; sc.onerror = () => rej(new Error('Could not load the Excel reader. Check your internet and try again.')); document.head.appendChild(sc); });
+}
+const hk = h => String(h ?? '').toLowerCase().replace(/₹/g, ' ').replace(/[^a-z0-9#]+/g, ' ').trim();
+const cellStr = v => { if (v === null || v === undefined) return null; const t = String(v).trim(); return (!t || t === '-' || t === '—') ? null : t; };
+const cellNum = v => { if (typeof v === 'number') return v; const t = cellStr(v); if (!t) return null; const n = parseFloat(t.replace(/,/g, '')); return isNaN(n) ? null : n; };
+function headerIdx(rows) { return rows.findIndex(r => (r || []).some(c => ['company', 'company name', 'name of company'].includes(hk(c)))); }
+function colFinder(head) {
+  const H = head.map(hk);
+  return (...names) => { for (const n of names) { const i = H.indexOf(n); if (i >= 0) return i; } for (const n of names) { const i = H.findIndex(h => h.startsWith(n)); if (i >= 0) return i; } return -1; };
+}
+function parseLeadsWorkbook(wb) {
+  let main = null, facs = null, gaps = null;
+  for (const name of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: null, raw: true });
+    const hi = headerIdx(rows); if (hi < 0) continue;
+    const H = rows[hi].map(hk);
+    const sheet = { name, head: rows[hi], rows: rows.slice(hi + 1) };
+    if (H.includes('facility') && H.includes('lender')) facs = facs || sheet;
+    else if (H.includes('gap')) gaps = gaps || sheet;
+    else main = main || sheet;
+  }
+  if (!main) throw new Error('No sheet with a “Company” column was found in this file.');
+  const c = colFinder(main.head); const g = (r, i) => i >= 0 ? r[i] : null;
+  const C = { rank: c('#', 's no', 'sr no', 'sl no', 'no'), pri: c('priority'), name: c('company', 'company name', 'name of company'), web: c('website'),
+    own: c('ownership'), ind: c('industry', 'sector'), loc: c('location', 'city'), proj: c('project', 'project name'), pcr: c('project cr', 'project size', 'project amount', 'project cost'),
+    stage: c('stage', 'project stage'), rating: c('rating'), lim: c('bank limits cr', 'bank limits'), untied: c('untied cr', 'untied'), turn: c('turnover cr', 'turnover'),
+    md: c('md head', 'md'), cfo: c('cfo'), c1: c('contact 1', 'contact person', 'contact', 'name of person'), d1: c('designation 1', 'designation'),
+    p1: c('phone 1', 'phone', 'mobile', 'contact number'), e1: c('email 1', 'email'), c2: c('contact 2'), d2: c('designation 2'), p2: c('phone 2'), e2: c('email 2'),
+    trig: c('lead trigger', 'trigger'), sol: c('aas solution', 'solution'), notes: c('notes', 'remarks') };
+  if (C.proj === C.pcr) C.proj = -1;
+  const keyOf = (rank, name) => rank != null ? 'r' + rank : 'n' + norm(name);
+  const facMap = new Map();
+  if (facs) { const f = colFinder(facs.head); const F = { rank: f('#'), name: f('company'), fac: f('facility'), cr: f('cr', 'amount'), lender: f('lender', 'bank'), status: f('status') };
+    facs.rows.forEach(r => { const nm = cellStr(g(r, F.name)); if (!nm) return; const item = { facility: cellStr(g(r, F.fac)), cr: cellNum(g(r, F.cr)), lender: cellStr(g(r, F.lender)), status: cellStr(g(r, F.status)) };
+      [keyOf(cellNum(g(r, F.rank)), nm), 'n' + norm(nm)].forEach(k => { if (!facMap.has(k)) facMap.set(k, []); facMap.get(k).push(item); }); }); }
+  const gapMap = new Map();
+  if (gaps) { const f = colFinder(gaps.head); const G = { rank: f('#'), name: f('company'), gap: f('gap') };
+    gaps.rows.forEach(r => { const nm = cellStr(g(r, G.name)); const gp = cellStr(g(r, G.gap)); if (!nm || !gp) return; gapMap.set(keyOf(cellNum(g(r, G.rank)), nm), gp); gapMap.set('n' + norm(nm), gp); }); }
+  const leads = [];
+  main.rows.forEach(r => {
+    const name = cellStr(g(r, C.name)); if (!name) return;
+    const rank = cellNum(g(r, C.rank));
+    const contacts = [[C.c1, C.d1, C.p1, C.e1], [C.c2, C.d2, C.p2, C.e2]].map(([a, d, p, e]) => ({ name: cellStr(g(r, a)) || '', designation: cellStr(g(r, d)) || '', phone: cellStr(g(r, p)) || '', email: cellStr(g(r, e)) || '' })).filter(p => p.name || p.phone);
+    const md = cellStr(g(r, C.md)), cfo = cellStr(g(r, C.cfo));
+    [[md, 'MD / head'], [cfo, 'CFO']].forEach(([n, d]) => { if (n && !contacts.some(p => norm(p.name) === norm(n))) contacts.push({ name: n, designation: d, phone: '', email: '' }); });
+    const k = keyOf(rank, name);
+    leads.push({ rank: rank != null ? Math.round(rank) : null, priority: cellStr(g(r, C.pri)), name, website: cellStr(g(r, C.web)), ownership: cellStr(g(r, C.own)),
+      industry: cellStr(g(r, C.ind)), location: cellStr(g(r, C.loc)), project: cellStr(g(r, C.proj)), project_cr: cellNum(g(r, C.pcr)), project_stage: cellStr(g(r, C.stage)),
+      rating: cellStr(g(r, C.rating)), bank_limits_cr: cellNum(g(r, C.lim)), untied_cr: cellNum(g(r, C.untied)), turnover_cr: cellNum(g(r, C.turn)), md, cfo, contacts,
+      trigger_note: cellStr(g(r, C.trig)), aas_solution: cellStr(g(r, C.sol)), notes: cellStr(g(r, C.notes)),
+      phone_gap: gapMap.get(k) || gapMap.get('n' + norm(name)) || null, facilities: facMap.get(k) || facMap.get('n' + norm(name)) || [] });
+  });
+  return { leads, sheets: { main: main.name, facilities: facs?.name, gaps: gaps?.name } };
+}
+function openLeadUpload() {
+  let parsed = null, fileName = '';
+  openModal(`<div class="mh"><h2>Upload leads Excel</h2><button class="iconbtn" data-act="closemodal">${ICON.close}</button></div>
+    <form class="mb" id="up-form" autocomplete="off">
+      <label class="f">Excel file<input type="file" id="up-file" accept=".xlsx,.xls,.csv"></label>
+      <div class="grid2"><label class="f">Batch name<input type="text" id="up-name" placeholder="e.g. Maharashtra project leads"></label>
+        <label class="f">Given to Shweta on<input type="date" id="up-date" value="${today()}"></label></div>
+      <label class="f"><span>Note <span class="hint">(optional)</span></span><input type="text" id="up-notes" placeholder="e.g. Start with priority A"></label>
+      <div id="up-out" class="small muted">Pick the file. BD Desk reads the main sheet, plus a Facilities sheet and a Mobile needed sheet if the file has them.</div>
+      <div class="err" id="up-err"></div>
+    </form>
+    <div class="mf"><button class="btn" data-act="closemodal">Cancel</button><button class="btn primary" id="up-go" disabled>Upload leads</button></div>`, m => {
+    $('#up-file', m).addEventListener('change', async e => {
+      const f = e.target.files[0]; if (!f) return; fileName = f.name;
+      $('#up-err', m).textContent = ''; $('#up-out', m).textContent = 'Reading the file…'; $('#up-go', m).disabled = true;
+      try {
+        await loadXLSX();
+        const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+        parsed = parseLeadsWorkbook(wb);
+        if (!$('#up-name', m).value) $('#up-name', m).value = f.name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ');
+        const L = parsed.leads; const idx = coByNorm();
+        const pc = k => L.filter(l => String(l.priority || '').toUpperCase() === k).length;
+        const inCrm = L.filter(l => idx.has(norm(l.name)));
+        $('#up-out', m).innerHTML = `<div class="note"><strong>${plural(L.length, 'lead')}</strong> found in “${esc(parsed.sheets.main)}”.
+          ${pc('A') + pc('B') + pc('C') ? ` Priority A ${pc('A')}, B ${pc('B')}, C ${pc('C')}.` : ''}
+          ${L.filter(l => l.contacts.some(p => p.phone)).length} have a phone number.
+          ${parsed.sheets.facilities ? ` Bank facilities read from “${esc(parsed.sheets.facilities)}”.` : ''}
+          ${parsed.sheets.gaps ? ` Number gaps read from “${esc(parsed.sheets.gaps)}”.` : ''}
+          ${inCrm.length ? `<br>${plural(inCrm.length, 'company is', 'companies are')} already in BD Desk and will be linked: ${inCrm.slice(0, 5).map(l => esc(l.name)).join(', ')}${inCrm.length > 5 ? '…' : ''}` : ''}</div>`;
+        $('#up-go', m).disabled = !L.length;
+      } catch (err) { parsed = null; $('#up-out', m).textContent = ''; $('#up-err', m).textContent = friendlyErr(err); }
+    });
+    $('#up-go', m).addEventListener('click', async () => {
+      const name = $('#up-name', m).value.trim(), date = $('#up-date', m).value;
+      if (!parsed) return; if (!name) { $('#up-err', m).textContent = 'Give this batch a name.'; return; }
+      if (!date) { $('#up-err', m).textContent = 'Pick the date it was given.'; return; }
+      const btn = $('#up-go', m); btn.disabled = true; btn.textContent = 'Uploading…';
+      try {
+        const idx = coByNorm(); const bid = uuid();
+        const { data: batch, error } = await sb.from('lead_batches').insert({ id: bid, name, provided_on: date, source_file: fileName, notes: $('#up-notes', m).value.trim() || null }).select().single();
+        if (error) throw error;
+        S.batches.set(batch.id, batch);
+        const rows = parsed.leads.map(l => ({ ...l, id: uuid(), batch_id: bid, company_id: idx.get(norm(l.name))?.id || null }));
+        for (let i = 0; i < rows.length; i += 100) {
+          const { data, error: e2 } = await sb.from('leads').insert(rows.slice(i, i + 100)).select();
+          if (e2) throw e2; data.forEach(r => S.leads.set(r.id, r));
+        }
+        UI.leads.batch = bid; closeModal(); toast(`${plural(rows.length, 'lead')} uploaded`);
+        if (S.route !== 'leads') location.hash = 'leads'; else scheduleRender();
+      } catch (err) { $('#up-err', m).textContent = friendlyErr(err); btn.disabled = false; btn.textContent = 'Upload leads'; }
+    });
+  });
+}
+
 /* ================= Drawer (company detail) ================= */
-function openDrawer(id) { S.drawerId = id; renderDrawer(); }
-function closeDrawer() { S.drawerId = null; $('#drawer')?.remove(); $('#drawer-scrim')?.remove(); }
+function openDrawer(id) { S.leadId = null; S.drawerId = id; renderDrawer(); }
+function closeDrawer() { S.drawerId = null; S.leadId = null; $('#drawer')?.remove(); $('#drawer-scrim')?.remove(); }
 function renderDrawer() {
   const c = S.companies.get(S.drawerId);
   if (!c) { closeDrawer(); return; }
@@ -1340,6 +1613,17 @@ document.addEventListener('click', async e => {
     case 'rm': UI.reports.mode = el.dataset.k; $$('[data-act="rm"]').forEach(b => b.classList.toggle('on', b === el)); return VIEWS.reports.body();
     case 'rp': { const k = +el.dataset.k; const r = UI.reports; r.anchor = k === 0 ? today() : (r.mode === 'month' ? addMonths(monthStart(r.anchor), k) : addDays(r.anchor, 7 * k)); return VIEWS.reports.body(); }
     case 'copysum': return copyText(summaryText());
+    case 'openlead': return openLead(id);
+    case 'leadlog': try { const c = await ensureLeadCompany(S.leads.get(id)); closeModal(); openLog({ companyId: c.id }); } catch (err) { fail(err); } return;
+    case 'leadco': { const c = leadCompany(S.leads.get(id)); if (c) openDrawer(c.id); return; }
+    case 'leaddrop': try { await patchLead(id, { dropped: true }); toast('Marked as not relevant'); } catch (err) { fail(err); } return;
+    case 'leadrestore': try { await patchLead(id, { dropped: false }); toast('Lead restored'); } catch (err) { fail(err); } return;
+    case 'batch': UI.leads.batch = id; return VIEWS.leads.body();
+    case 'lpri': UI.leads.pri = el.dataset.k; $$('[data-act="lpri"]').forEach(b => b.classList.toggle('on', b === el)); return VIEWS.leads.body();
+    case 'uploadleads': return openLeadUpload();
+    case 'delbatch-ask': el.parentElement.innerHTML = `<span class="small">Delete this batch and its leads? Companies and calls stay.</span> <button class="btn sm danger solid" data-act="delbatch" data-id="${id}">Delete</button> <button class="btn sm" data-act="delbatch-no">Keep</button>`; return;
+    case 'delbatch-no': return VIEWS.leads.body();
+    case 'delbatch': try { await delRow('lead_batches', id); S.batches.delete(id); [...S.leads.values()].filter(l => l.batch_id === id).forEach(l => S.leads.delete(l.id)); UI.leads.batch = ''; scheduleRender(); toast('Batch deleted'); } catch (err) { fail(err); } return;
     case 'export-calls': return exportCalls(false);
     case 'export-calls-all': return exportCalls(true);
     case 'export-cos': return exportCompanies();
@@ -1363,7 +1647,7 @@ document.addEventListener('click', async e => {
   }
 });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { if ($('#modal')) closeModal(); else if (S.drawerId) closeDrawer(); }
+  if (e.key === 'Escape') { if ($('#modal')) closeModal(); else if (S.drawerId || S.leadId) closeDrawer(); }
 });
 
 boot().catch(e => { root().innerHTML = `<div class="setupcard">${wordmark()}<h2>Couldn't start</h2><p>${esc(e.message || e)}</p></div>`; });
