@@ -616,7 +616,7 @@ VIEWS.companies = {
       <thead><tr><th>Company</th><th>Stage</th><th>Contact</th><th>Requirement</th><th>Last call</th><th>Next follow-up</th><th class="n">Calls</th><th>Source</th></tr></thead>
       <tbody>${rows.map(c => { const l = la.get(c.id); const p = primaryContact(c);
         return `<tr class="click" data-act="open" data-id="${c.id}"><td class="co">${esc(c.name)}${c.city ? `<div class="small muted">${esc(c.city)}</div>` : ''}</td><td>${stageChip(c.stage)}</td>
-          <td>${esc(p?.name || '')}${p?.designation ? `<div class="small muted">${esc(p.designation)}</div>` : ''}</td>
+          <td>${esc(p?.name || '')}${p?.designation ? `<div class="small muted">${esc(p.designation)}</div>` : ''}${(c.contacts || []).filter(x => x.name || x.phone).length > 1 ? `<div class="small muted">+${(c.contacts || []).filter(x => x.name || x.phone).length - 1} more</div>` : ''}</td>
           <td>${esc(c.requirement || '')}${c.amount_cr ? `<div class="small muted">₹${esc(c.amount_cr)} Cr</div>` : ''}</td>
           <td>${l ? `<span class="small">${esc(fShort(l.call_date))}</span><div>${chip(l.outcome)}</div>` : '<span class="small muted">Not called</span>'}</td>
           <td>${dueHTML(c.next_follow_up, c.next_follow_up_time)}</td><td class="n">${cc.get(c.id) || 0}</td><td class="small">${esc(c.source || '')}</td></tr>`; }).join('')}</tbody></table>`
@@ -1160,10 +1160,17 @@ function openLog({ companyId = null, actId = null } = {}) {
         <label class="f">Date<input type="date" id="lc-date" value="${a?.call_date || today()}" required></label>
       </div>
       <div class="grid3">
-        <label class="f">Person spoken to<input type="text" id="lc-person" list="lc-people" value="${esc(a?.person || '')}"><datalist id="lc-people"></datalist></label>
+        <label class="f">Person spoken to<input type="text" id="lc-person" value="${esc(a?.person || '')}"></label>
         <label class="f">Designation<input type="text" id="lc-desig" value="${esc(a?.designation || '')}"></label>
         <label class="f">Contact number<input type="text" id="lc-phone" value="${esc(a?.phone || '')}" placeholder="98xxxxxxxx / 022-xxxxxxxx"></label>
       </div>
+      <div id="lc-pick-wrap" class="f" style="display:grid;gap:6px" hidden><span class="small" style="font-weight:500">Saved persons at this company <span class="hint">(click to fill)</span></span><div class="pickers" id="lc-pick"></div>
+        <div id="lc-newp" class="newperson" hidden>
+          <div class="grid2" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+            <label class="f">Name<input type="text" id="np-name"></label><label class="f">Designation<input type="text" id="np-desig"></label>
+            <label class="f">Phone<input type="text" id="np-phone"></label><label class="f">Email<input type="email" id="np-email"></label></div>
+          <div class="row"><button type="button" class="btn sm primary" id="np-save">Save person</button><button type="button" class="btn sm" id="np-cancel">Cancel</button><span class="err" id="np-err"></span></div>
+        </div></div>
       <div class="f" style="display:grid;gap:6px"><span class="small" style="font-weight:500">Status</span>
         <div class="outcomes" id="lc-outs">${OUTCOMES.map(o => `<button type="button" data-o="${o.k}" class="tone-${o.tone} ${M.outcome === o.k ? 'on' : ''}" title="${esc(GUIDE[o.k])}">${o.label}</button>`).join('')}</div></div>
       <label class="f">Remarks / next step<textarea id="lc-rem" rows="3" placeholder="What was said, what happens next">${esc(a?.remarks || '')}</textarea></label>
@@ -1189,9 +1196,41 @@ function openLog({ companyId = null, actId = null } = {}) {
     <div class="mf">${a && isAdmin() ? '<span class="left" id="lc-delwrap"><button class="btn ghost danger" data-act="delcall-ask">Delete call</button></span>' : ''}
       <button class="btn" data-act="closemodal">Cancel</button>${a ? '' : '<button class="btn" id="lc-next">Save and log next</button>'}<button class="btn primary" id="lc-save">Save</button></div>`, m => {
     const coIn = $('#lc-co', m), list = $('#lc-co-list', m), note = $('#lc-co-note', m);
+    const drawPick = () => {
+      const co = M.companyId && S.companies.get(M.companyId);
+      const list = (co?.contacts || []).filter(p => p.name || p.phone);
+      $('#lc-pick-wrap', m).hidden = !co;
+      const cur = norm($('#lc-person', m).value);
+      $('#lc-pick', m).innerHTML = list.map((p, i) => `<button type="button" data-pc="${i}" class="${cur && norm(p.name) === cur ? 'on' : ''}"><strong>${esc(p.name || 'No name')}</strong>${p.designation ? ` <span class="muted">${esc(p.designation)}</span>` : ''}${p.phone ? ` <span class="muted">· ${esc(p.phone)}</span>` : ''}</button>`).join('')
+        + `<button type="button" data-pc="new" class="newp">+ Add new person</button>`;
+    };
+    $('#lc-pick', m).addEventListener('click', e => {
+      const bt = e.target.closest('[data-pc]'); if (!bt) return;
+      const co = M.companyId && S.companies.get(M.companyId);
+      const list = (co?.contacts || []).filter(p => p.name || p.phone);
+      if (bt.dataset.pc === 'new') { ['name', 'desig', 'phone', 'email'].forEach(k => { $('#np-' + k, m).value = ''; }); $('#np-err', m).textContent = ''; $('#lc-newp', m).hidden = false; $('#np-name', m).focus(); return; }
+      const p = list[+bt.dataset.pc];
+      $('#lc-person', m).value = p.name || ''; $('#lc-desig', m).value = p.designation || ''; $('#lc-phone', m).value = p.phone || '';
+      drawPick(); $('#lc-outs button', m).focus();
+    });
+    $('#np-cancel', m).addEventListener('click', () => { $('#lc-newp', m).hidden = true; });
+    $('#np-save', m).addEventListener('click', async () => {
+      const co = M.companyId && S.companies.get(M.companyId); if (!co) return;
+      const p = { name: $('#np-name', m).value.trim(), designation: $('#np-desig', m).value.trim(), phone: $('#np-phone', m).value.trim(), email: $('#np-email', m).value.trim() };
+      if (!p.name && !p.phone) { $('#np-err', m).textContent = 'Enter at least a name or a phone number.'; return; }
+      if (p.name && (co.contacts || []).some(x => norm(x.name) === norm(p.name))) { $('#np-err', m).textContent = 'This person is already saved. Click their name above.'; return; }
+      const btn = $('#np-save', m); btn.disabled = true;
+      try {
+        await patchCompany(co.id, { contacts: [...(co.contacts || []), p] });
+        $('#lc-person', m).value = p.name; $('#lc-desig', m).value = p.designation; $('#lc-phone', m).value = p.phone;
+        $('#lc-newp', m).hidden = true; drawPick(); toast(`${p.name || 'Person'} saved to ${co.name}`);
+      } catch (err) { $('#np-err', m).textContent = friendlyErr(err); }
+      btn.disabled = false;
+    });
+    $('#lc-person', m).addEventListener('input', () => drawPick());
     const fillPeople = () => {
       const co = M.companyId && S.companies.get(M.companyId);
-      $('#lc-people', m).innerHTML = (co?.contacts || []).map(p => `<option value="${esc(p.name)}">`).join('');
+      setTimeout(drawPick, 0);
       if (co && !a) {
         $('#lc-req', m).value = co.requirement || ''; $('#lc-amt', m).value = co.amount_cr ?? '';
         const p = primaryContact(co);
@@ -1297,7 +1336,9 @@ async function saveCall(M, m, another) {
 /* ---------- Company form ---------- */
 function openCompanyForm(id = null, presetName = '') {
   const c = id ? S.companies.get(id) : null;
-  const contacts = JSON.parse(JSON.stringify(c?.contacts?.length ? c.contacts : [{ name: '', designation: '', phone: '', email: '' }]));
+  const blank = () => ({ name: '', designation: '', phone: '', email: '' });
+  const contacts = JSON.parse(JSON.stringify(c?.contacts || []));
+  while (contacts.length < 3) contacts.push(blank());
   const contactRows = () => contacts.map((p, i) => `<div class="grid2" style="grid-template-columns:repeat(4,minmax(0,1fr)) auto;align-items:end" data-ci="${i}">
       <label class="f">Name<input type="text" data-cf="name" value="${esc(p.name)}"></label><label class="f">Designation<input type="text" data-cf="designation" value="${esc(p.designation)}"></label>
       <label class="f">Phone<input type="text" data-cf="phone" value="${esc(p.phone)}"></label><label class="f">Email<input type="email" data-cf="email" value="${esc(p.email || '')}"></label>
@@ -1320,7 +1361,7 @@ function openCompanyForm(id = null, presetName = '') {
         <label class="f">Website<input type="text" id="cf-web" value="${esc(c?.website || '')}"></label>
       </div>
       <label class="f">Notes<textarea id="cf-notes" rows="3">${esc(c?.notes || '')}</textarea></label>
-      <div class="stack" style="gap:8px"><div class="row" style="justify-content:space-between"><h3>Contacts</h3><button type="button" class="btn sm" id="cf-addc">${ICON.plus}Add contact</button></div><div id="cf-contacts" class="stack" style="gap:10px">${contactRows()}</div></div>
+      <div class="stack" style="gap:8px"><div class="row" style="justify-content:space-between"><div><h3>Contact persons</h3><div class="small muted">One row per person. For two numbers of the same person, use a slash in Phone.</div></div><button type="button" class="btn sm" id="cf-addc">${ICON.plus}Add contact</button></div><div id="cf-contacts" class="stack" style="gap:10px">${contactRows()}</div></div>
       <div class="err" id="cf-err"></div>
     </form>
     <div class="mf"><button class="btn" data-act="closemodal">Cancel</button><button class="btn primary" id="cf-save">${c ? 'Save changes' : 'Add company'}</button></div>`, m => {
