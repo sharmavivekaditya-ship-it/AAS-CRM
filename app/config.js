@@ -4,5 +4,5 @@
 // "secret" key here.
 window.AAS_CONFIG = {
   supabaseUrl: "https://mzedjgkrfjhzwxckusxq.supabase.co",
-  supabaseAnonKey: "",  // the "anon public" key (or the "publishable" key)
+  supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im16ZWRqZ2tyZmpoend4Y2t1c3hxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM1NzE4MjUsImV4cCI6MjEwOTE0NzgyNX0.SXMuDYPA5cLw_5-yx3j6AHkT2DoioraLHPa4GvcEbd4",
 };
