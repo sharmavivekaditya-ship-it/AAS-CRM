@@ -119,7 +119,7 @@ const UI = {
   companies: { q: '', stage: '', source: '', sort: 'recent' },
   pipeline: { q: '' },
   reports: { mode: 'week', anchor: today(), by: '' },
-  leads: { batch: '', pri: '', status: '', q: '' },
+  leads: { batch: '', pri: '', status: 'new', q: '' },
 };
 const isAdmin = () => S.me?.role === 'admin';
 const meId = () => S.me?.id;
@@ -871,7 +871,7 @@ VIEWS.leads = {
     return `<div id="lb"></div>
       <div class="filters">
         <div class="seg" role="group" aria-label="Priority">${[['', 'All'], ['A', 'A'], ['B', 'B'], ['C', 'C']].map(([k, l]) => `<button data-act="lpri" data-k="${k}" class="${u.pri === k ? 'on' : ''}">${k ? 'Priority ' + l : l}</button>`).join('')}</div>
-        <select id="ld-st" aria-label="Status"><option value="">All open leads</option><option value="new">Not called</option><option value="called">Called</option><option value="positive">Positive</option><option value="dropped">Not relevant (hidden)</option></select>
+        <select id="ld-st" aria-label="Status"><option value="new">To call (not called yet)</option><option value="called">Called (now in Companies)</option><option value="positive">Positive only</option><option value="">All leads</option><option value="dropped">Not relevant</option></select>
         <input type="search" id="ld-q" placeholder="Filter by company, place, person" value="${esc(u.q)}" style="width:min(260px,100%)">
         <span style="flex:1"></span>
         ${isAdmin() ? `<button class="btn primary" data-act="uploadleads">${ICON.plus}Upload leads Excel</button>` : ''}
@@ -908,7 +908,8 @@ VIEWS.leads = {
     rows.sort((a, b2) => String(a.l.priority || 'Z').localeCompare(String(b2.l.priority || 'Z')) || (a.l.rank ?? 9999) - (b2.l.rank ?? 9999));
     const by = b.created_by ? personName(b.created_by) : '';
     $('#vb').innerHTML = `<section class="panel"><div class="ph"><div><h2>${esc(b.name)}</h2><div class="small muted" style="margin-top:2px">Given on ${esc(fDay(b.provided_on))}${by ? ' by ' + esc(by) : ''}${b.source_file ? ' · ' + esc(b.source_file) : ''}${b.notes ? ' · ' + esc(b.notes) : ''}</div></div>
-      <span class="row small"><strong>${plural(rows.length, 'lead')}</strong>${!u.status && batchStats(b.id, idx).dropped ? `<button class="btn sm ghost" data-act="showdropped">Show ${batchStats(b.id, idx).dropped} not relevant</button>` : ''}${isAdmin() ? `<span><button class="btn sm ghost danger" data-act="delbatch-ask" data-id="${b.id}">Delete batch</button></span>` : ''}</span></div>
+      <span class="row small"><strong>${plural(rows.length, 'lead')}</strong>${u.status !== 'dropped' && batchStats(b.id, idx).dropped ? `<button class="btn sm ghost" data-act="showdropped">Show ${batchStats(b.id, idx).dropped} not relevant</button>` : ''}${isAdmin() ? `<span><button class="btn sm ghost danger" data-act="delbatch-ask" data-id="${b.id}">Delete batch</button></span>` : ''}</span></div>
+      ${u.status === 'new' && batchStats(b.id, idx).reached ? `<div class="note" style="margin:12px 16px 0">${plural(batchStats(b.id, idx).reached, 'lead')} already called ${batchStats(b.id, idx).reached === 1 ? 'has' : 'have'} moved to Companies. <button class="btn sm" data-act="showcalled">See called leads</button></div>` : ''}
       <div class="pb flush tablewrap">${rows.length ? `<table class="t"><thead><tr><th class="n">#</th><th>Pri.</th><th>Company</th><th>Project</th><th>Contact</th><th>Status</th><th></th></tr></thead><tbody>
       ${rows.map(({ l, st }) => { const p = (l.contacts || []).find(x => x.phone) || (l.contacts || [])[0];
         return `<tr class="click" data-act="openlead" data-id="${l.id}"><td class="n muted">${esc(l.rank ?? '')}</td><td>${priChip(l.priority)}</td>
@@ -917,7 +918,7 @@ VIEWS.leads = {
           <td>${p ? `${esc(p.name || '')}${p.designation ? `<div class="small muted">${esc(p.designation)}</div>` : ''}${p.phone ? `<div class="small">${phoneHTML(p.phone)}</div>` : '<div class="small muted">No number</div>'}` : '<span class="small muted">No contact</span>'}</td>
           <td>${leadStatusHTML(st)}</td>
           <td class="n">${st.k === 'dropped' ? '' : `<button class="btn sm" data-act="leadlog" data-id="${l.id}">Log call</button>`}</td></tr>`; }).join('')}
-      </tbody></table>` : '<div class="empty"><strong>No leads match</strong><span>Change the filters above.</span></div>'}</div></section>`;
+      </tbody></table>` : (u.status === 'new' && !q && !u.pri ? '<div class="empty"><strong>All leads in this batch are called</strong><span>Well done. Called leads are in Companies, Pipeline and Follow-ups.</span></div>' : '<div class="empty"><strong>No leads match</strong><span>Change the filters above.</span></div>')}</div></section>`;
   },
 };
 function openLead(id) { S.drawerId = null; S.leadId = id; renderLeadDrawer(); }
@@ -1328,7 +1329,8 @@ async function saveCall(M, m, another) {
     if (editing && isAdmin() && byProfile) row.by_id = byProfile.id;
     await saveAct(row);
     scheduleRender();
-    toast(editing ? 'Call updated' : `Call logged for ${co.name}`);
+    const fromLead = !editing && [...S.leads.values()].some(l => (l.company_id === co.id || norm(l.name) === norm(co.name)) && !l.dropped);
+    toast(editing ? 'Call updated' : fromLead ? `Call logged. ${co.name} moved from Leads to Companies.` : `Call logged for ${co.name}`);
     if (another) openLog(); else closeModal();
   } catch (e) { err.textContent = friendlyErr(e); btns.forEach(b => b.disabled = false); }
 }
@@ -1661,6 +1663,7 @@ document.addEventListener('click', async e => {
     case 'leadco': { const c = leadCompany(S.leads.get(id)); if (c) openDrawer(c.id); return; }
     case 'leaddrop': try { await patchLead(id, { dropped: true }); closeDrawer(); toast('Removed from the list. Find it under “Not relevant” if needed.'); } catch (err) { fail(err); } return;
     case 'showdropped': UI.leads.status = 'dropped'; $('#ld-st').value = 'dropped'; return VIEWS.leads.body();
+    case 'showcalled': UI.leads.status = 'called'; $('#ld-st').value = 'called'; return VIEWS.leads.body();
     case 'leaddel-ask': $('#ld-del').innerHTML = `<span class="small">Delete permanently?</span> <button class="btn sm danger solid" data-act="leaddel" data-id="${id}">Delete</button>`; return;
     case 'leaddel': try { await delRow('leads', id); S.leads.delete(id); closeDrawer(); scheduleRender(); toast('Lead deleted'); } catch (err) { fail(err); } return;
     case 'leadrestore': try { await patchLead(id, { dropped: false }); toast('Lead restored'); } catch (err) { fail(err); } return;
