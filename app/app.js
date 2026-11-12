@@ -251,7 +251,8 @@ async function fetchAll(table) {
     out.push(...data);
     if (data.length < step) break;
   }
-  return out;
+  // Deleted rows stay in the central database but never show in the app.
+  return out.filter(r => !r.deleted_at);
 }
 
 async function loadAll() {
@@ -278,7 +279,7 @@ async function loadAll() {
 function subscribe() {
   const apply = (key) => p => {
     const map = S[key];
-    if (p.eventType === 'DELETE') map.delete(p.old.id); else map.set(p.new.id, p.new);
+    if (p.eventType === 'DELETE' || p.new?.deleted_at) map.delete((p.new || p.old).id); else map.set(p.new.id, p.new);
     scheduleRender();
   };
   S.chan = sb.channel('aas-crm-live')
@@ -310,9 +311,15 @@ async function saveAct(row) {
   if (error) throw error;
   S.acts.set(data.id, data); return data;
 }
+// "Delete" only hides a record: it is stamped deleted_at / deleted_by and kept
+// in the central database for good.
 async function delRow(table, id) {
-  const { error } = await sb.from(table).delete().eq('id', id);
+  const { data, error } = await sb.from(table).update({ deleted_at: new Date().toISOString(), deleted_by: meId() }).eq('id', id).select('id');
+  if (error && /deleted_(at|by)/.test(error.message || '')) {   // database not upgraded yet (04 SQL not run)
+    const r = await sb.from(table).delete().eq('id', id); if (r.error) throw r.error; return;
+  }
   if (error) throw error;
+  if (!data || !data.length) throw new Error("You don't have permission to do that. Ask your admin.");
 }
 const fail = e => toast(friendlyErr(e), true);
 function friendlyErr(e) {
@@ -1173,7 +1180,7 @@ function renderDrawer() {
         <button class="btn sm" data-act="editco" data-id="${c.id}">${ICON.edit}Edit details</button>
         ${isAdmin() ? `<button class="btn sm ghost danger" data-act="delco-ask">Delete</button>` : ''}
       </div>
-      ${confirmDel ? `<div class="note warn row" style="justify-content:space-between">Delete ${esc(c.name)} and its ${plural(acts.length, 'call')}? This can't be undone.<span class="row"><button class="btn sm danger solid" data-act="delco" data-id="${c.id}">Delete</button><button class="btn sm" data-act="delco-cancel">Cancel</button></span></div>` : ''}
+      ${confirmDel ? `<div class="note warn row" style="justify-content:space-between">Remove ${esc(c.name)} and its ${plural(acts.length, 'call')} from BD Desk?<span class="row"><button class="btn sm danger solid" data-act="delco" data-id="${c.id}">Delete</button><button class="btn sm" data-act="delco-cancel">Cancel</button></span></div>` : ''}
     </div>
     <div class="db">
       <div class="followbox">
@@ -1742,7 +1749,7 @@ document.addEventListener('click', async e => {
     case 'showdropped': UI.leads.status = 'dropped'; $('#ld-st').value = 'dropped'; return VIEWS.leads.body();
     case 'mergedupes': { el.disabled = true; el.textContent = 'Merging…'; try { const r = await mergeBatchDupes(id); scheduleRender(); toast(`Merged ${plural(r.companies, 'company', 'companies')}. ${r.removed} extra rows removed.`); } catch (err) { fail(err); el.disabled = false; el.textContent = 'Merge into one lead per company'; } return; }
     case 'showcalled': UI.leads.status = 'called'; $('#ld-st').value = 'called'; return VIEWS.leads.body();
-    case 'leaddel-ask': $('#ld-del').innerHTML = `<span class="small">Delete permanently?</span> <button class="btn sm danger solid" data-act="leaddel" data-id="${id}">Delete</button>`; return;
+    case 'leaddel-ask': $('#ld-del').innerHTML = `<span class="small">Remove this lead from BD Desk?</span> <button class="btn sm danger solid" data-act="leaddel" data-id="${id}">Remove</button>`; return;
     case 'leaddel': try { await delRow('leads', id); S.leads.delete(id); closeDrawer(); scheduleRender(); toast('Lead deleted'); } catch (err) { fail(err); } return;
     case 'leadrestore': try { await patchLead(id, { dropped: false }); toast('Lead restored'); } catch (err) { fail(err); } return;
     case 'batch': UI.leads.batch = id; return VIEWS.leads.body();
