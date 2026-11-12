@@ -849,7 +849,8 @@ async function ensureLeadCompany(l) {
   if (!c) {
     const lenders = [...new Set((l.facilities || []).map(f => f.lender).filter(Boolean))].join(', ');
     const notes = [l.trigger_note && ('Lead: ' + l.trigger_note), l.aas_solution && ('AAS angle: ' + l.aas_solution),
-      l.project && ('Project: ' + l.project + (l.project_cr ? ` (${crore(l.project_cr)}${l.project_stage ? ', ' + l.project_stage : ''})` : ''))].filter(Boolean).join('\n');
+      l.project && ('Project: ' + l.project + (l.project_cr ? ` (${crore(l.project_cr)}${l.project_stage ? ', ' + l.project_stage : ''})` : '')),
+      l.notes && ('Remarks from the leads list:\n' + l.notes)].filter(Boolean).join('\n');
     c = await saveCompany({ id: uuid(), name: l.name, stage: 'new', source: 'Project leads', website: l.website || null, sector: l.industry || null,
       city: l.location || null, banks: lenders || null, notes: notes || null, contacts: (l.contacts || []).filter(p => p.name || p.phone) });
   }
@@ -909,13 +910,14 @@ VIEWS.leads = {
     const by = b.created_by ? personName(b.created_by) : '';
     $('#vb').innerHTML = `<section class="panel"><div class="ph"><div><h2>${esc(b.name)}</h2><div class="small muted" style="margin-top:2px">Given on ${esc(fDay(b.provided_on))}${by ? ' by ' + esc(by) : ''}${b.source_file ? ' · ' + esc(b.source_file) : ''}${b.notes ? ' · ' + esc(b.notes) : ''}</div></div>
       <span class="row small"><strong>${plural(rows.length, 'lead')}</strong>${u.status !== 'dropped' && batchStats(b.id, idx).dropped ? `<button class="btn sm ghost" data-act="showdropped">Show ${batchStats(b.id, idx).dropped} not relevant</button>` : ''}${isAdmin() ? `<span><button class="btn sm ghost danger" data-act="delbatch-ask" data-id="${b.id}">Delete batch</button></span>` : ''}</span></div>
+      ${batchDupes(b.id).length ? `<div class="note warn row" style="margin:12px 16px 0;justify-content:space-between"><span>${plural(batchDupes(b.id).length, 'company is', 'companies are')} listed more than once in this batch.</span><button class="btn sm primary" data-act="mergedupes" data-id="${b.id}">Merge into one lead per company</button></div>` : ''}
       ${u.status === 'new' && batchStats(b.id, idx).reached ? `<div class="note" style="margin:12px 16px 0">${plural(batchStats(b.id, idx).reached, 'lead')} already called ${batchStats(b.id, idx).reached === 1 ? 'has' : 'have'} moved to Companies. <button class="btn sm" data-act="showcalled">See called leads</button></div>` : ''}
       <div class="pb flush tablewrap">${rows.length ? `<table class="t"><thead><tr><th class="n">#</th><th>Pri.</th><th>Company</th><th>Project</th><th>Contact</th><th>Status</th><th></th></tr></thead><tbody>
       ${rows.map(({ l, st }) => { const p = (l.contacts || []).find(x => x.phone) || (l.contacts || [])[0];
         return `<tr class="click" data-act="openlead" data-id="${l.id}"><td class="n muted">${esc(l.rank ?? '')}</td><td>${priChip(l.priority)}</td>
           <td class="co">${esc(l.name)}<div class="small muted">${esc([l.location, l.industry].filter(Boolean).join(' · '))}</div></td>
           <td>${l.project_cr ? `<strong class="num">${crore(l.project_cr)}</strong>` : ''}<div class="small muted">${esc(l.project_stage || '')}</div></td>
-          <td>${p ? `${esc(p.name || '')}${p.designation ? `<div class="small muted">${esc(p.designation)}</div>` : ''}${p.phone ? `<div class="small">${phoneHTML(p.phone)}</div>` : '<div class="small muted">No number</div>'}` : '<span class="small muted">No contact</span>'}</td>
+          <td>${p ? `${esc(p.name || '')}${p.designation ? `<div class="small muted">${esc(p.designation)}</div>` : ''}${p.phone ? `<div class="small">${phoneHTML(p.phone)}</div>` : '<div class="small muted">No number</div>'}${(l.contacts || []).length > 1 ? `<div class="small muted">+${(l.contacts || []).length - 1} more ${(l.contacts || []).length - 1 === 1 ? 'person' : 'persons'}</div>` : ''}` : '<span class="small muted">No contact</span>'}</td>
           <td>${leadStatusHTML(st)}</td>
           <td class="n">${st.k === 'dropped' ? '' : `<button class="btn sm" data-act="leadlog" data-id="${l.id}">Log call</button>`}</td></tr>`; }).join('')}
       </tbody></table>` : (u.status === 'new' && !q && !u.pri ? '<div class="empty"><strong>All leads in this batch are called</strong><span>Well done. Called leads are in Companies, Pipeline and Follow-ups.</span></div>' : '<div class="empty"><strong>No leads match</strong><span>Change the filters above.</span></div>')}</div></section>`;
@@ -953,7 +955,7 @@ function renderLeadDrawer() {
         ${kv('Turnover', crore(l.turnover_cr))}${kv('Bank limits', crore(l.bank_limits_cr))}${kv('Untied limits', crore(l.untied_cr))}
         ${kv('Ownership', esc(l.ownership))}${kv('Industry', esc(l.industry))}${kv('Location', esc(l.location))}
         ${kv('Website', l.website ? `<a href="${esc(/^https?:/.test(l.website) ? l.website : 'https://' + l.website)}" target="_blank" rel="noopener">${esc(l.website)}</a>` : '')}
-        ${kv('MD / head', esc(l.md))}${kv('CFO', esc(l.cfo))}${kv('Notes', esc(l.notes))}
+        ${kv('MD / head', esc(l.md))}${kv('CFO', esc(l.cfo))}${kv('Remarks', l.notes ? `<span style="white-space:pre-wrap">${esc(l.notes)}</span>` : '')}
       </dl></section>
       ${fac.length ? `<section><h3 style="margin-bottom:6px">Existing bank facilities <span class="muted small">${crore(facTot)} total</span></h3><div class="tablewrap"><table class="t"><thead><tr><th>Facility</th><th class="n">₹ Cr</th><th>Lender</th><th>Status</th></tr></thead><tbody>
         ${fac.map(f => `<tr><td>${esc(f.facility || '')}</td><td class="n num">${esc(f.cr ?? '')}</td><td>${esc(f.lender || '')}</td><td class="small">${esc(f.status || '')}</td></tr>`).join('')}</tbody></table></div></section>` : ''}
@@ -973,8 +975,19 @@ function colFinder(head) {
   const H = head.map(hk);
   return (...names) => { for (const n of names) { const i = H.indexOf(n); if (i >= 0) return i; } for (const n of names) { const i = H.findIndex(h => h.startsWith(n)); if (i >= 0) return i; } return -1; };
 }
+const cellTxt = v => { const t = cellStr(v); return (t === null || t === '0') ? null : t; };
+function fmtPhone(v) {
+  const t = cellStr(v); if (!t) return '';
+  return t.split(/\s*[\/,;]\s*/).filter(Boolean).map(p => {
+    const d = p.replace(/\D/g, '');
+    if (/^91[6-9]\d{9}$/.test(d)) return `+91 ${d.slice(2, 7)} ${d.slice(7)}`;
+    if (/^[6-9]\d{9}$/.test(d)) return `${d.slice(0, 5)} ${d.slice(5)}`;
+    return p;
+  }).join(' / ');
+}
+const titleName = s => /[a-z]/.test(s) ? s : s.toLowerCase().replace(/\b([a-z])/g, m => m.toUpperCase());
 function parseLeadsWorkbook(wb) {
-  let main = null, facs = null, gaps = null;
+  const mains = []; let facs = null, gaps = null;
   for (const name of wb.SheetNames) {
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: null, raw: true });
     const hi = headerIdx(rows); if (hi < 0) continue;
@@ -982,17 +995,10 @@ function parseLeadsWorkbook(wb) {
     const sheet = { name, head: rows[hi], rows: rows.slice(hi + 1) };
     if (H.includes('facility') && H.includes('lender')) facs = facs || sheet;
     else if (H.includes('gap')) gaps = gaps || sheet;
-    else main = main || sheet;
+    else mains.push(sheet);
   }
-  if (!main) throw new Error('No sheet with a “Company” column was found in this file.');
-  const c = colFinder(main.head); const g = (r, i) => i >= 0 ? r[i] : null;
-  const C = { rank: c('#', 's no', 'sr no', 'sl no', 'no'), pri: c('priority'), name: c('company', 'company name', 'name of company'), web: c('website'),
-    own: c('ownership'), ind: c('industry', 'sector'), loc: c('location', 'city'), proj: c('project', 'project name'), pcr: c('project cr', 'project size', 'project amount', 'project cost'),
-    stage: c('stage', 'project stage'), rating: c('rating'), lim: c('bank limits cr', 'bank limits'), untied: c('untied cr', 'untied'), turn: c('turnover cr', 'turnover'),
-    md: c('md head', 'md'), cfo: c('cfo'), c1: c('contact 1', 'contact person', 'contact', 'name of person'), d1: c('designation 1', 'designation'),
-    p1: c('phone 1', 'phone', 'mobile', 'contact number'), e1: c('email 1', 'email'), c2: c('contact 2'), d2: c('designation 2'), p2: c('phone 2'), e2: c('email 2'),
-    trig: c('lead trigger', 'trigger'), sol: c('aas solution', 'solution'), notes: c('notes', 'remarks') };
-  if (C.proj === C.pcr) C.proj = -1;
+  if (!mains.length) throw new Error('No sheet with a “Company” column was found in this file.');
+  const g = (r, i) => i >= 0 ? r[i] : null;
   const keyOf = (rank, name) => rank != null ? 'r' + rank : 'n' + norm(name);
   const facMap = new Map();
   if (facs) { const f = colFinder(facs.head); const F = { rank: f('#'), name: f('company'), fac: f('facility'), cr: f('cr', 'amount'), lender: f('lender', 'bank'), status: f('status') };
@@ -1001,22 +1007,92 @@ function parseLeadsWorkbook(wb) {
   const gapMap = new Map();
   if (gaps) { const f = colFinder(gaps.head); const G = { rank: f('#'), name: f('company'), gap: f('gap') };
     gaps.rows.forEach(r => { const nm = cellStr(g(r, G.name)); const gp = cellStr(g(r, G.gap)); if (!nm || !gp) return; gapMap.set(keyOf(cellNum(g(r, G.rank)), nm), gp); gapMap.set('n' + norm(nm), gp); }); }
-  const leads = [];
-  main.rows.forEach(r => {
-    const name = cellStr(g(r, C.name)); if (!name) return;
-    const rank = cellNum(g(r, C.rank));
-    const contacts = [[C.c1, C.d1, C.p1, C.e1], [C.c2, C.d2, C.p2, C.e2]].map(([a, d, p, e]) => ({ name: cellStr(g(r, a)) || '', designation: cellStr(g(r, d)) || '', phone: cellStr(g(r, p)) || '', email: cellStr(g(r, e)) || '' })).filter(p => p.name || p.phone);
-    const md = cellStr(g(r, C.md)), cfo = cellStr(g(r, C.cfo));
-    [[md, 'MD / head'], [cfo, 'CFO']].forEach(([n, d]) => { if (n && !contacts.some(p => norm(p.name) === norm(n))) contacts.push({ name: n, designation: d, phone: '', email: '' }); });
-    const k = keyOf(rank, name);
-    leads.push({ rank: rank != null ? Math.round(rank) : null, priority: cellStr(g(r, C.pri)), name, website: cellStr(g(r, C.web)), ownership: cellStr(g(r, C.own)),
-      industry: cellStr(g(r, C.ind)), location: cellStr(g(r, C.loc)), project: cellStr(g(r, C.proj)), project_cr: cellNum(g(r, C.pcr)), project_stage: cellStr(g(r, C.stage)),
-      rating: cellStr(g(r, C.rating)), bank_limits_cr: cellNum(g(r, C.lim)), untied_cr: cellNum(g(r, C.untied)), turnover_cr: cellNum(g(r, C.turn)), md, cfo, contacts,
-      trigger_note: cellStr(g(r, C.trig)), aas_solution: cellStr(g(r, C.sol)), notes: cellStr(g(r, C.notes)),
-      phone_gap: gapMap.get(k) || gapMap.get('n' + norm(name)) || null, facilities: facMap.get(k) || facMap.get('n' + norm(name)) || [] });
+
+  // One lead per company. Rows for the same company (e.g. one row per director) are merged:
+  // each person becomes a contact, remarks are kept per person.
+  const groups = new Map(); let rowCount = 0;
+  const addContact = (L, p) => {
+    if (!p.name && !p.phone) return;
+    const ex = L.contacts.find(x => (p.name && norm(x.name) === norm(p.name)) || (!p.name && p.phone && x.phone === p.phone));
+    if (!ex) { L.contacts.push(p); return; }
+    if (p.phone && !String(ex.phone).includes(p.phone)) ex.phone = ex.phone ? `${ex.phone} / ${p.phone}` : p.phone;
+    if (!ex.designation && p.designation) ex.designation = p.designation;
+    if (!ex.email && p.email) ex.email = p.email;
+  };
+  mains.forEach((sh, si) => {
+    const c = colFinder(sh.head); const H = sh.head.map(hk);
+    const C = { rank: c('#', 's no', 'sr no', 'sl no'), pri: c('priority'), name: c('company', 'company name', 'name of company'), web: c('website'),
+      own: c('ownership'), ind: c('industry', 'sector', 'nature of business'), loc: c('location', 'city'), proj: c('project', 'project name'), pcr: c('project cr', 'project size', 'project amount', 'project cost'),
+      stage: c('stage', 'project stage'), rating: c('rating', 'current rating'), agency: c('agency name', 'rating agency'), lim: c('bank limits cr', 'bank limits', 'loan size'), untied: c('untied cr', 'untied'), turn: c('turnover cr', 'turnover'),
+      md: c('md head', 'md'), cfo: c('cfo'), c1: c('contact 1', 'contact person', 'director name', 'contact', 'name of person'), d1: c('designation 1', 'designation'),
+      p1: c('phone 1', 'phone', 'mobile', 'contact number'), e1: c('email 1', 'email'), c2: c('contact 2'), d2: c('designation 2'), p2: c('phone 2'), e2: c('email 2'),
+      trig: c('lead trigger', 'trigger'), sol: c('aas solution', 'solution') };
+    if (C.proj === C.pcr) C.proj = -1;
+    // every "Remarks"/"Notes" column, plus unnamed columns at the end that hold text
+    const lastNamed = H.reduce((m, h, i) => h ? i : m, -1);
+    const remCols = H.map((h, i) => (/^(remark|notes|comment)/.test(h) || (!h && i > lastNamed)) ? i : -1).filter(i => i >= 0);
+    sh.rows.forEach(r => {
+      const name = cellStr(g(r, C.name)); if (!name) return;
+      if (si === 0) rowCount++;
+      const rank = cellNum(g(r, C.rank));
+      const key = 'n' + norm(name);
+      let L = groups.get(key);
+      if (!L) {
+        if (si > 0) return; // extra sheets only add to companies already in the main list
+        const rating = [cellTxt(g(r, C.rating)), cellTxt(g(r, C.agency))].filter(Boolean);
+        L = { rank: rank != null ? Math.round(rank) : null, priority: cellStr(g(r, C.pri)), name, website: cellStr(g(r, C.web)), ownership: cellStr(g(r, C.own)),
+          industry: cellStr(g(r, C.ind)), location: cellStr(g(r, C.loc)), project: cellStr(g(r, C.proj)), project_cr: cellNum(g(r, C.pcr)) || null, project_stage: cellStr(g(r, C.stage)),
+          rating: rating.length === 2 ? `${rating[0]} (${rating[1]})` : (rating[0] || null), bank_limits_cr: cellNum(g(r, C.lim)) || null, untied_cr: cellNum(g(r, C.untied)) || null, turnover_cr: cellNum(g(r, C.turn)) || null,
+          md: cellStr(g(r, C.md)), cfo: cellStr(g(r, C.cfo)), contacts: [], _notes: [],
+          trigger_note: cellStr(g(r, C.trig)), aas_solution: cellStr(g(r, C.sol)),
+          phone_gap: gapMap.get(keyOf(rank, name)) || gapMap.get(key) || null, facilities: facMap.get(keyOf(rank, name)) || facMap.get(key) || [] };
+        groups.set(key, L);
+      }
+      [[C.c1, C.d1, C.p1, C.e1], [C.c2, C.d2, C.p2, C.e2]].forEach(([a, d, p, e]) => {
+        const nm = cellStr(g(r, a)); addContact(L, { name: nm ? titleName(nm) : '', designation: cellStr(g(r, d)) || '', phone: fmtPhone(g(r, p)), email: cellStr(g(r, e)) || '' });
+      });
+      const who = cellStr(g(r, C.c1));
+      remCols.forEach(i => { const t = cellTxt(g(r, i)); if (!t) return; const line = who ? `${titleName(who)}: ${t}` : t; if (!L._notes.includes(line)) L._notes.push(line); });
+    });
   });
-  return { leads, sheets: { main: main.name, facilities: facs?.name, gaps: gaps?.name } };
+  const leads = [...groups.values()].map(L => {
+    [[L.md, 'MD / head'], [L.cfo, 'CFO']].forEach(([n, d]) => { if (n && !L.contacts.some(p => norm(p.name) === norm(n))) L.contacts.push({ name: n, designation: d, phone: '', email: '' }); });
+    L.contacts.sort((a, b) => (b.phone ? 1 : 0) - (a.phone ? 1 : 0));
+    const { _notes, ...rest } = L; return { ...rest, notes: _notes.length ? _notes.join('\n') : null };
+  });
+  return { leads, rowCount, sheets: { main: mains[0].name, extra: mains.slice(1).map(m => m.name), facilities: facs?.name, gaps: gaps?.name } };
 }
+
+/* Merge leads in a batch that are the same company (fixes older uploads). */
+function batchDupes(bid) {
+  const m = new Map();
+  for (const l of S.leads.values()) if (l.batch_id === bid) { const k = norm(l.name); if (!m.has(k)) m.set(k, []); m.get(k).push(l); }
+  return [...m.values()].filter(g => g.length > 1);
+}
+async function mergeBatchDupes(bid) {
+  const groups = batchDupes(bid); let removed = 0;
+  for (const grp of groups) {
+    grp.sort((a, b) => (b.company_id ? 1 : 0) - (a.company_id ? 1 : 0) || (a.rank ?? 9999) - (b.rank ?? 9999) || String(a.created_at).localeCompare(String(b.created_at)));
+    const keep = grp[0]; const contacts = JSON.parse(JSON.stringify(keep.contacts || []));
+    const notes = (keep.notes ? keep.notes.split('\n') : []);
+    for (const o of grp.slice(1)) {
+      for (const p of (o.contacts || [])) {
+        const ex = contacts.find(x => (p.name && norm(x.name) === norm(p.name)) || (!p.name && p.phone && x.phone === p.phone));
+        if (!ex) contacts.push(p);
+        else if (p.phone && !String(ex.phone).includes(p.phone)) ex.phone = ex.phone ? `${ex.phone} / ${p.phone}` : p.phone;
+      }
+      (o.notes ? o.notes.split('\n') : []).forEach(n => { if (!notes.includes(n)) notes.push(n); });
+    }
+    contacts.forEach(p => { if (p.phone) p.phone = fmtPhone(p.phone); if (p.name) p.name = titleName(p.name); });
+    const patch = { contacts, notes: notes.join('\n') || null };
+    for (const f of ['company_id', 'website', 'industry', 'location', 'rating', 'bank_limits_cr', 'trigger_note', 'aas_solution', 'phone_gap']) if (!keep[f]) { const v = grp.find(x => x[f]); if (v) patch[f] = v[f]; }
+    if (grp.some(x => !x.dropped)) patch.dropped = false;
+    await patchLead(keep.id, patch);
+    for (const o of grp.slice(1)) { await delRow('leads', o.id); S.leads.delete(o.id); removed++; }
+  }
+  return { companies: groups.length, removed };
+}
+
 function openLeadUpload() {
   let parsed = null, fileName = '';
   openModal(`<div class="mh"><h2>Upload leads Excel</h2><button class="iconbtn" data-act="closemodal">${ICON.close}</button></div>
@@ -1040,7 +1116,8 @@ function openLeadUpload() {
         const L = parsed.leads; const idx = coByNorm();
         const pc = k => L.filter(l => String(l.priority || '').toUpperCase() === k).length;
         const inCrm = L.filter(l => idx.has(norm(l.name)));
-        $('#up-out', m).innerHTML = `<div class="note"><strong>${plural(L.length, 'lead')}</strong> found in “${esc(parsed.sheets.main)}”.
+        $('#up-out', m).innerHTML = `<div class="note"><strong>${plural(L.length, 'company', 'companies')}</strong> found in “${esc(parsed.sheets.main)}”${parsed.rowCount > L.length ? ` (${parsed.rowCount} rows, grouped so each company comes once with all its persons and numbers)` : ''}.
+          ${parsed.sheets.extra.length ? ` Remarks also read from “${parsed.sheets.extra.map(esc).join('”, “')}”.` : ''}
           ${pc('A') + pc('B') + pc('C') ? ` Priority A ${pc('A')}, B ${pc('B')}, C ${pc('C')}.` : ''}
           ${L.filter(l => l.contacts.some(p => p.phone)).length} have a phone number.
           ${parsed.sheets.facilities ? ` Bank facilities read from “${esc(parsed.sheets.facilities)}”.` : ''}
@@ -1663,6 +1740,7 @@ document.addEventListener('click', async e => {
     case 'leadco': { const c = leadCompany(S.leads.get(id)); if (c) openDrawer(c.id); return; }
     case 'leaddrop': try { await patchLead(id, { dropped: true }); closeDrawer(); toast('Removed from the list. Find it under “Not relevant” if needed.'); } catch (err) { fail(err); } return;
     case 'showdropped': UI.leads.status = 'dropped'; $('#ld-st').value = 'dropped'; return VIEWS.leads.body();
+    case 'mergedupes': { el.disabled = true; el.textContent = 'Merging…'; try { const r = await mergeBatchDupes(id); scheduleRender(); toast(`Merged ${plural(r.companies, 'company', 'companies')}. ${r.removed} extra rows removed.`); } catch (err) { fail(err); el.disabled = false; el.textContent = 'Merge into one lead per company'; } return; }
     case 'showcalled': UI.leads.status = 'called'; $('#ld-st').value = 'called'; return VIEWS.leads.body();
     case 'leaddel-ask': $('#ld-del').innerHTML = `<span class="small">Delete permanently?</span> <button class="btn sm danger solid" data-act="leaddel" data-id="${id}">Delete</button>`; return;
     case 'leaddel': try { await delRow('leads', id); S.leads.delete(id); closeDrawer(); scheduleRender(); toast('Lead deleted'); } catch (err) { fail(err); } return;
