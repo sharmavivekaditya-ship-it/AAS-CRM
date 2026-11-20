@@ -9,6 +9,7 @@ const OUTCOMES = [
   { k: 'callback',       label: 'Call back',         stage: 'callback',       tone: 'blue' },
   { k: 'opportunity',    label: 'Funding opportunity', stage: 'opportunity',  tone: 'teal' },
   { k: 'opp_rating',     label: 'Rating opportunity',  stage: 'opp_rating',   tone: 'orchid' },
+  { k: 'referral',       label: 'Referral given',      stage: null,           tone: 'green' },
   { k: 'mtg_sched',      label: 'Meeting scheduled', stage: 'mtg_sched',      tone: 'violet' },
   { k: 'mtg_done',       label: 'Meeting done',      stage: 'mtg_done',       tone: 'indigo' },
   { k: 'docs',           label: 'Docs awaited',      stage: 'docs',           tone: 'cyan' },
@@ -24,6 +25,7 @@ const GUIDE = {
   callback: 'Asked to be contacted again later',
   opportunity: 'A real funding need identified (loan, working capital, refinance etc.)',
   opp_rating: 'A credit rating need identified',
+  referral: 'A banker, consultant or CA gave us a lead or an introduction',
   mtg_sched: 'Date and time fixed for a meeting or call',
   mtg_done: 'Meeting held; next step goes in remarks',
   docs: 'Awaiting documents or information from the client',
@@ -47,16 +49,28 @@ const STAGES = [
   { k: 'not_interested', label: 'Not interested',    tone: 'red',   closed: true },
   { k: 'lost',           label: 'Lost',              tone: 'red',   closed: true },
 ];
+const CATS = [
+  { k: 'client',     label: 'Client / prospect' },
+  { k: 'bank',       label: 'Bank / NBFC' },
+  { k: 'consultant', label: 'Consultant' },
+  { k: 'ca',         label: 'CA firm' },
+  { k: 'dsa',        label: 'DSA / connector' },
+  { k: 'other',      label: 'Other' },
+];
+const CAT = Object.fromEntries(CATS.map(c => [c.k, c]));
+const catOf = c => (c && CAT[c.category]) ? c.category : 'client';
+const isNet = c => !!c && catOf(c) !== 'client';
+const catChip = k => `<span class="chip plain tone-indigo">${CAT[k]?.label || 'Other'}</span>`;
 const STG = Object.fromEntries(STAGES.map((s, i) => [s.k, { ...s, rank: i }]));
 const NOT_CONNECTED = new Set(['not_answering', 'no_response']);
-const POSITIVE = new Set(['callback', 'opportunity', 'opp_rating', 'mtg_sched', 'mtg_done', 'docs', 'proposal', 'won']);
+const POSITIVE = new Set(['callback', 'opportunity', 'opp_rating', 'referral', 'mtg_sched', 'mtg_done', 'docs', 'proposal', 'won']);
 const REQS = ['Term loan', 'Working capital (CC/OD)', 'WCTL', 'Project finance', 'Refinance / takeover', 'LAP', 'Warehouse receipt finance',
   'Supply chain / bill discounting', 'Trade finance / LC-BG', 'NCD / bonds', 'Credit rating', 'IPO / equity', 'Other'];
 const SOURCES = ['Cold call', 'Project leads', 'Rating action list', 'Referral', 'Ex-banker network', 'Inbound', 'LinkedIn', 'Existing relationship', 'Other'];
 const SHARED = { '': 'Not shared', whatsapp: 'On WhatsApp', email: 'On email', both: 'WhatsApp and email' };
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const ROUTES = {
-  today: 'Today', leads: 'Leads', calls: 'Call log', pipeline: 'Pipeline', companies: 'Companies',
+  today: 'Today', leads: 'Leads', calls: 'Call log', pipeline: 'Pipeline', companies: 'Companies', network: 'Banks & network',
   followups: 'Follow-ups', reports: 'Reports', team: 'Team logins', settings: 'Settings & data',
 };
 const ADMIN_ROUTES = new Set(['team', 'settings']);
@@ -120,6 +134,7 @@ const UI = {
   pipeline: { q: '' },
   reports: { mode: 'week', anchor: today(), by: '' },
   leads: { batch: '', pri: '', status: 'new', q: '' },
+  network: { cat: '', q: '' },
 };
 const isAdmin = () => S.me?.role === 'admin';
 const meId = () => S.me?.id;
@@ -297,7 +312,10 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && S.
 
 /* ================= Writes ================= */
 async function saveCompany(row) {
-  const { data, error } = await sb.from('companies').upsert(row).select().single();
+  let { data, error } = await sb.from('companies').upsert(row).select().single();
+  if (error && /category/.test(error.message || '') && 'category' in row) {   // 05 SQL not run yet
+    const { category, ...rest } = row; ({ data, error } = await sb.from('companies').upsert(rest).select().single());
+  }
   if (error) throw error;
   S.companies.set(data.id, data); return data;
 }
@@ -331,7 +349,7 @@ function friendlyErr(e) {
 
 /* ================= Shell ================= */
 function navHTML() {
-  const links = ['today', 'leads', 'calls', 'pipeline', 'companies', 'followups', 'reports'];
+  const links = ['today', 'leads', 'calls', 'pipeline', 'companies', 'network', 'followups', 'reports'];
   const adm = ['team', 'settings'];
   const a = k => `<a href="#${k}" data-nav="${k}" class="${S.route === k ? 'on' : ''}"><span>${ROUTES[k]}</span><span class="count" data-count="${k}" hidden></span></a>`;
   return `<nav class="nav">${links.map(a).join('')}${isAdmin() ? `<div class="eyebrow nav-label">Admin</div>${adm.map(a).join('')}` : ''}</nav>`;
@@ -410,7 +428,7 @@ function wireSearch() {
       return (c.contacts || []).some(p => (p.name || '').toLowerCase().includes(q) || (qd.length >= 4 && String(p.phone || '').replace(/\D/g, '').includes(qd)));
     }).slice(0, 8);
     hl = 0;
-    res.innerHTML = hits.length ? hits.map((c, i) => `<button class="${i === hl ? 'hl' : ''}" data-act="open" data-id="${c.id}"><div><strong>${esc(c.name)}</strong></div><div class="small muted">${esc((c.contacts || []).map(p => p.name).filter(Boolean).join(', ') || STG[c.stage]?.label || '')}</div></button>`).join('')
+    res.innerHTML = hits.length ? hits.map((c, i) => `<button class="${i === hl ? 'hl' : ''}" data-act="open" data-id="${c.id}"><div><strong>${esc(c.name)}</strong></div><div class="small muted">${esc([isNet(c) ? CAT[catOf(c)].label : '', (c.contacts || []).map(p => p.name).filter(Boolean).join(', ') || (isNet(c) ? '' : STG[c.stage]?.label || '')].filter(Boolean).join(' · '))}</div></button>`).join('')
       : `<div class="empty small">No match. <button class="btn sm" data-act="newco" data-name="${esc(inp.value.trim())}">Add “${esc(inp.value.trim())}”</button></div>`;
     res.hidden = false;
   };
@@ -478,7 +496,7 @@ function fuRow(c, last) {
       <button class="btn sm" data-act="log" data-co="${c.id}">Log call</button>
       <button class="btn sm ghost" data-act="snooze" data-id="${c.id}" title="Move to next working day">+1 day</button>
       <button class="btn sm ghost" data-act="fudone" data-id="${c.id}" title="Clear this follow-up">Done</button></div>
-    <span class="s">${stageChip(c.stage)} ${p ? esc(p.name) + (p.designation ? ', ' + esc(p.designation) : '') : ''} ${p?.phone ? phoneHTML(p.phone) : ''}</span>
+    <span class="s">${isNet(c) ? catChip(catOf(c)) : stageChip(c.stage)} ${p ? esc(p.name) + (p.designation ? ', ' + esc(p.designation) : '') : ''} ${p?.phone ? phoneHTML(p.phone) : ''}</span>
     ${c.follow_up_note || last?.remarks ? `<div class="rem">${esc(c.follow_up_note || last.remarks)}</div>` : ''}
   </div>`;
 }
@@ -541,7 +559,7 @@ VIEWS.calls = {
         <tbody>${[...days.entries()].map(([d, list]) => `<tr class="day"><td colspan="9">${esc(fDay(d))} · ${plural(list.length, 'call')}</td></tr>` + list.map(a => {
           const c = S.companies.get(a.company_id); i++;
           return `<tr class="click" data-act="${canEditAct(a) ? 'editcall' : 'open'}" data-id="${canEditAct(a) ? a.id : a.company_id}">
-            <td class="n muted">${i}</td><td class="co">${esc(c?.name || '—')}</td><td>${esc(a.person || '')}</td><td>${esc(a.designation || '')}</td>
+            <td class="n muted">${i}</td><td class="co">${esc(c?.name || '—')}${isNet(c) ? `<div class="small muted">${esc(CAT[catOf(c)].label)}</div>` : ''}</td><td>${esc(a.person || '')}</td><td>${esc(a.designation || '')}</td>
             <td>${phoneHTML(a.phone)}</td><td>${chip(a.outcome)}</td><td class="rem">${esc(a.remarks || '')}${a.profile_shared ? `<div class="small muted">Profile shared ${esc(SHARED[a.profile_shared]?.toLowerCase() || '')}</div>` : ''}</td>
             <td>${a.follow_up ? `<span class="small">${esc(fShort(a.follow_up))}${a.follow_up_time ? ', ' + esc(a.follow_up_time) : ''}</span>` : ''}</td><td class="small">${esc(byName(a))}</td></tr>`;
         }).join('')).join('')}</tbody></table>`
@@ -558,7 +576,7 @@ VIEWS.pipeline = {
   wire() { $('#pl-q').addEventListener('input', debounce(e => { UI.pipeline.q = e.target.value; this.body(); }, 150)); },
   body() {
     const q = UI.pipeline.q.trim().toLowerCase(); const la = lastActsMap();
-    const cos = [...S.companies.values()].filter(c => !q || c.name.toLowerCase().includes(q));
+    const cos = [...S.companies.values()].filter(c => !isNet(c) && (!q || c.name.toLowerCase().includes(q)));
     const by = k => cos.filter(c => (c.stage || 'new') === k).sort((a, b) => String(la.get(b.id)?.call_date || b.created_at).localeCompare(String(la.get(a.id)?.call_date || a.created_at)));
     const card = c => { const last = la.get(c.id); const p = primaryContact(c);
       return `<div class="card" draggable="true" data-drag="${c.id}" data-act="open" data-id="${c.id}">
@@ -612,7 +630,7 @@ VIEWS.companies = {
   body() {
     const u = UI.companies; const q = u.q.trim().toLowerCase();
     const la = lastActsMap(); const cc = callCount();
-    let rows = [...S.companies.values()].filter(c => (!u.stage || c.stage === u.stage) && (!u.source || c.source === u.source)
+    let rows = [...S.companies.values()].filter(c => !isNet(c) && (!u.stage || c.stage === u.stage) && (!u.source || c.source === u.source)
       && (!q || [c.name, c.city, c.sector, ...(c.contacts || []).map(p => p.name + ' ' + p.phone)].some(x => String(x || '').toLowerCase().includes(q))));
     const key = c => la.get(c.id)?.call_date || String(c.created_at).slice(0, 10);
     if (u.sort === 'name') rows.sort((a, b) => a.name.localeCompare(b.name));
@@ -628,6 +646,37 @@ VIEWS.companies = {
           <td>${l ? `<span class="small">${esc(fShort(l.call_date))}</span><div>${chip(l.outcome)}</div>` : '<span class="small muted">Not called</span>'}</td>
           <td>${dueHTML(c.next_follow_up, c.next_follow_up_time)}</td><td class="n">${cc.get(c.id) || 0}</td><td class="small">${esc(c.source || '')}</td></tr>`; }).join('')}</tbody></table>`
       : `<div class="empty"><strong>No companies match</strong><span>Clear the filters, or add a company.</span></div>`}</div></section>`;
+  },
+};
+
+
+/* ---------- Banks & network ---------- */
+VIEWS.network = {
+  shell() {
+    const u = UI.network;
+    return `<p class="muted" style="margin:0">Banks, NBFCs, consultants, CA firms and DSAs you speak to. Calls here count in your daily calls and reports, but these names stay out of Companies and Pipeline.</p>
+      <div class="filters">
+        <div class="seg" role="group" aria-label="Type">${[['', 'All'], ...CATS.filter(x => x.k !== 'client').map(x => [x.k, x.label])].map(([k, l]) => `<button data-act="netcat" data-k="${k}" class="${u.cat === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+        <input type="search" id="nw-q" placeholder="Filter by name, person, city" value="${esc(u.q)}" style="width:min(240px,100%)">
+        <span style="flex:1"></span>
+        <button class="btn" data-act="newco" data-cat="bank">${ICON.plus}Add bank / consultant</button>
+        <button class="btn primary" data-act="netlog">${ICON.plus}Log a call</button>
+      </div><div id="vb"></div>`;
+  },
+  wire() { $('#nw-q').addEventListener('input', debounce(e => { UI.network.q = e.target.value; this.body(); }, 150)); },
+  body() {
+    const u = UI.network; const q = u.q.trim().toLowerCase(); const la = lastActsMap(); const cc = callCount();
+    const rows = [...S.companies.values()].filter(c => isNet(c) && (!u.cat || catOf(c) === u.cat)
+      && (!q || [c.name, c.city, ...(c.contacts || []).map(p => p.name + ' ' + p.phone)].some(x => String(x || '').toLowerCase().includes(q))))
+      .sort((a, b) => String(la.get(b.id)?.call_date || b.created_at).localeCompare(String(la.get(a.id)?.call_date || a.created_at)));
+    $('#vb').innerHTML = `<section class="panel"><div class="ph"><span class="small"><strong>${plural(rows.length, 'contact')}</strong></span></div><div class="pb flush tablewrap">${rows.length ? `<table class="t">
+      <thead><tr><th>Name</th><th>Type</th><th>Contact person</th><th>Last call</th><th>Next follow-up</th><th class="n">Calls</th></tr></thead>
+      <tbody>${rows.map(c => { const l = la.get(c.id); const p = primaryContact(c); const more = (c.contacts || []).filter(x => x.name || x.phone).length - 1;
+        return `<tr class="click" data-act="open" data-id="${c.id}"><td class="co">${esc(c.name)}${c.city ? `<div class="small muted">${esc(c.city)}</div>` : ''}</td><td>${catChip(catOf(c))}</td>
+          <td>${esc(p?.name || '')}${p?.designation ? `<div class="small muted">${esc(p.designation)}</div>` : ''}${p?.phone ? `<div class="small">${phoneHTML(p.phone)}</div>` : ''}${more > 0 ? `<div class="small muted">+${more} more</div>` : ''}</td>
+          <td>${l ? `<span class="small">${esc(fShort(l.call_date))}</span><div>${chip(l.outcome)}</div>` : '<span class="small muted">Not called</span>'}</td>
+          <td>${dueHTML(c.next_follow_up, c.next_follow_up_time)}</td><td class="n">${cc.get(c.id) || 0}</td></tr>`; }).join('')}</tbody></table>`
+      : `<div class="empty"><strong>No banks or consultants yet</strong><span>Click Log a call above after you speak to a banker, consultant or CA. Choose the type and it will be saved here.</span></div>`}</div></section>`;
   },
 };
 
@@ -656,7 +705,7 @@ VIEWS.followups = {
         <div class="pb flush list">${noDate.length ? noDate.map(c => { const l = la.get(c.id); const p = primaryContact(c);
           return `<div class="li"><span class="t" data-act="open" data-id="${c.id}">${esc(c.name)}</span>
             <div class="r"><button class="btn sm" data-act="log" data-co="${c.id}">Log call</button><button class="btn sm ghost" data-act="settom" data-id="${c.id}">Set for tomorrow</button></div>
-            <span class="s">${stageChip(c.stage)} ${esc(p?.name || '')} ${l ? '· last call ' + esc(fShort(l.call_date)) : ''}</span>${l?.remarks ? `<div class="rem">${esc(l.remarks)}</div>` : ''}</div>`; }).join('')
+            <span class="s">${isNet(c) ? catChip(catOf(c)) : stageChip(c.stage)} ${esc(p?.name || '')} ${l ? '· last call ' + esc(fShort(l.call_date)) : ''}</span>${l?.remarks ? `<div class="rem">${esc(l.remarks)}</div>` : ''}</div>`; }).join('')
           : '<div class="empty"><span>Every open lead has a date.</span></div>'}</div></section>`;
   },
 };
@@ -672,7 +721,8 @@ const REP_COLS = [
   ['Funding opp.', a => a.outcome === 'opportunity'], ['Rating opp.', a => a.outcome === 'opp_rating'], ['Mtg sched.', a => a.outcome === 'mtg_sched'], ['Mtg done', a => a.outcome === 'mtg_done'],
   ['Docs awaited', a => a.outcome === 'docs'], ['Proposal', a => a.outcome === 'proposal'], ['Mandate', a => a.outcome === 'won'],
   ['No req.', a => a.outcome === 'no_req'], ['Not interested', a => a.outcome === 'not_interested'], ['Not reached', a => NOT_CONNECTED.has(a.outcome)],
-  ['Profile shared', a => !!a.profile_shared],
+  ['Profile shared', a => !!a.profile_shared], ['Referral', a => a.outcome === 'referral'],
+  ['Banks & network', a => isNet(S.companies.get(a.company_id))],
 ];
 function reportData() {
   const [from, to] = repRange(); const by = UI.reports.by;
@@ -706,7 +756,7 @@ VIEWS.reports = {
     const people = new Map(); rows.forEach(a => { const n = byName(a); people.set(n, [...(people.get(n) || []), a]); });
     $('#vb').innerHTML = `
       <div class="funnel">
-        <div><span class="eyebrow">Calls</span><span class="v">${rows.length}</span><span class="p">Target ${target} · ${pctOf(rows.length, target)}</span></div>
+        <div><span class="eyebrow">Calls</span><span class="v">${rows.length}</span><span class="p">Target ${target} · ${pctOf(rows.length, target)}${cnt(a => isNet(S.companies.get(a.company_id))) ? ` · ${cnt(a => isNet(S.companies.get(a.company_id)))} to banks & network` : ''}</span></div>
         <div><span class="eyebrow">Connected</span><span class="v">${conn}</span><span class="p">${pctOf(conn, rows.length)} of calls</span></div>
         <div><span class="eyebrow">Positive</span><span class="v">${pos}</span><span class="p">${pctOf(pos, conn)} of connected</span></div>
         <div><span class="eyebrow">Meetings fixed</span><span class="v">${ms}</span><span class="p">${pctOf(ms, conn)} of connected</span></div>
@@ -1175,7 +1225,8 @@ function renderDrawer() {
       <div class="row" style="justify-content:space-between;align-items:flex-start;flex-wrap:nowrap"><div style="min-width:0"><div class="eyebrow">${esc(c.source || 'Company')}${c.city ? ' · ' + esc(c.city) : ''}</div><h2 style="font-size:20px;margin-top:2px">${esc(c.name)}</h2></div>
         <button class="iconbtn" data-act="closedrawer" title="Close">${ICON.close}</button></div>
       <div class="row">
-        <select id="dr-stage" aria-label="Stage" style="width:auto">${STAGES.map(s => `<option value="${s.k}" ${c.stage === s.k ? 'selected' : ''}>${s.label}</option>`).join('')}</select>
+        ${isNet(c) ? '' : `<select id="dr-stage" aria-label="Stage" style="width:auto">${STAGES.map(s => `<option value="${s.k}" ${c.stage === s.k ? 'selected' : ''}>${s.label}</option>`).join('')}</select>`}
+        <select id="dr-cat" aria-label="Type" style="width:auto">${CATS.map(x => `<option value="${x.k}" ${catOf(c) === x.k ? 'selected' : ''}>${x.label}</option>`).join('')}</select>
         <button class="btn primary sm" data-act="log" data-co="${c.id}">${ICON.plus}Log call</button>
         <button class="btn sm" data-act="editco" data-id="${c.id}">${ICON.edit}Edit details</button>
         ${isAdmin() ? `<button class="btn sm ghost danger" data-act="delco-ask">Delete</button>` : ''}
@@ -1208,7 +1259,8 @@ function renderDrawer() {
     </div>`;
   dr.dataset.confirm = confirmDel ? '1' : '';
   $('.db', dr).scrollTop = scroll;
-  $('#dr-stage').addEventListener('change', async e => { try { await patchCompany(c.id, { stage: e.target.value }); toast('Stage updated'); } catch (err) { fail(err); } });
+  $('#dr-cat').addEventListener('change', async e => { try { await patchCompany(c.id, { category: e.target.value }); toast(e.target.value === 'client' ? 'Moved to Companies' : 'Moved to Banks & network'); } catch (err) { fail(/category/.test(err.message || '') ? 'Run supabase/05_banks_network.sql in Supabase first.' : err); } });
+  $('#dr-stage')?.addEventListener('change', async e => { try { await patchCompany(c.id, { stage: e.target.value }); toast('Stage updated'); } catch (err) { fail(err); } });
   $('#dr-fu').addEventListener('change', async e => { try { await patchCompany(c.id, { next_follow_up: e.target.value || null }); toast(e.target.value ? 'Follow-up set' : 'Follow-up cleared'); } catch (err) { fail(err); } });
 }
 
@@ -1228,7 +1280,7 @@ const quickDates = target => {
 /* ---------- Log / edit call ---------- */
 let curActId = null;
 function currentActId() { return curActId; }
-function openLog({ companyId = null, actId = null } = {}) {
+function openLog({ companyId = null, actId = null, category = 'client' } = {}) {
   curActId = actId;
   const a = actId ? S.acts.get(actId) : null;
   const cid = a ? a.company_id : companyId;
@@ -1238,10 +1290,11 @@ function openLog({ companyId = null, actId = null } = {}) {
   let lastBy = ''; try { lastBy = localStorage.getItem('aas.by') || ''; } catch (e) { /* ignore */ }
   openModal(`<div class="mh"><h2>${a ? 'Edit call' : 'Log a call'}</h2><button class="iconbtn" data-act="closemodal">${ICON.close}</button></div>
     <form class="mb" id="lc-form" autocomplete="off">
-      <div class="grid3">
+      <div class="grid3" style="align-items:start">
         <label class="f" style="grid-column:span 2">Company
           <div class="ac"><input type="text" id="lc-co" value="${esc(c?.name || '')}" ${a ? 'disabled' : ''} placeholder="Start typing a company name" required><div class="ac-list" id="lc-co-list" hidden></div></div>
-          <span id="lc-co-note" class="small muted"></span></label>
+          <span id="lc-co-note" class="small muted"></span>
+          <span id="lc-cat-wrap" class="row small" hidden style="gap:6px">Type of contact <select id="lc-cat" style="width:auto;padding:3px 8px">${CATS.map(x => `<option value="${x.k}">${x.label}</option>`).join('')}</select></span></label>
         <label class="f">Date<input type="date" id="lc-date" value="${a?.call_date || today()}" required></label>
       </div>
       <div class="grid3">
@@ -1324,9 +1377,11 @@ function openLog({ companyId = null, actId = null } = {}) {
     };
     const setNote = () => {
       const v = coIn.value.trim();
-      if (M.companyId) { const co = S.companies.get(M.companyId); note.innerHTML = co ? `${stageChip(co.stage)} ${plural(actsFor(co.id).length, 'earlier call')}` : ''; }
-      else note.innerHTML = v ? '<span>New company. It will be added to the CRM.</span>' : '';
+      if (M.companyId) { const co = S.companies.get(M.companyId); note.innerHTML = co ? `${isNet(co) ? catChip(catOf(co)) : stageChip(co.stage)} ${plural(actsFor(co.id).length, 'earlier call')}` : ''; }
+      else note.innerHTML = v ? '<span>New name. It will be added to BD Desk.</span>' : '';
+      $('#lc-cat-wrap', m).hidden = !!M.companyId || !v;
     };
+    $('#lc-cat', m).value = category;
     let hl = 0, hits = [];
     const showList = () => {
       const v = coIn.value.trim(); const nv = norm(v);
@@ -1335,7 +1390,7 @@ function openLog({ companyId = null, actId = null } = {}) {
       if (exact) M.companyId = exact.id;
       hits = v ? [...S.companies.values()].filter(x => x.name.toLowerCase().includes(v.toLowerCase()) || (nv.length > 2 && (norm(x.name).includes(nv) || nv.includes(norm(x.name))))).slice(0, 8) : [];
       hl = 0;
-      list.innerHTML = hits.map((x, i) => `<button type="button" data-pick="${x.id}" class="${i === hl ? 'hl' : ''}">${esc(x.name)} <span class="small muted">${esc(STG[x.stage]?.label || '')}</span></button>`).join('');
+      list.innerHTML = hits.map((x, i) => `<button type="button" data-pick="${x.id}" class="${i === hl ? 'hl' : ''}">${esc(x.name)} <span class="small muted">${esc(isNet(x) ? CAT[catOf(x)].label : (STG[x.stage]?.label || ''))}</span></button>`).join('');
       list.hidden = !hits.length || (hits.length === 1 && hits[0].id === M.companyId);
       setNote(); fillPeople();
     };
@@ -1380,7 +1435,7 @@ async function saveCall(M, m, another) {
     const editing = M.actId ? S.acts.get(M.actId) : null;
     let co = M.companyId ? S.companies.get(M.companyId) : [...S.companies.values()].find(x => norm(x.name) === norm(name));
     const isNew = !co;
-    co = co ? JSON.parse(JSON.stringify(co)) : { id: uuid(), name, stage: 'new', contacts: [], source: 'Cold call' };
+    co = co ? JSON.parse(JSON.stringify(co)) : { id: uuid(), name, stage: 'new', contacts: [], source: 'Cold call', category: $('#lc-cat', m).value || 'client' };
     const person = v('#lc-person'), desig = v('#lc-desig'), phone = v('#lc-phone');
     if (person || phone) {
       const ex = (co.contacts || []).find(x => person ? norm(x.name) === norm(person) && x.name : (x.phone && x.phone === phone));
@@ -1420,7 +1475,7 @@ async function saveCall(M, m, another) {
 }
 
 /* ---------- Company form ---------- */
-function openCompanyForm(id = null, presetName = '') {
+function openCompanyForm(id = null, presetName = '', presetCat = 'client') {
   const c = id ? S.companies.get(id) : null;
   const blank = () => ({ name: '', designation: '', phone: '', email: '' });
   const contacts = JSON.parse(JSON.stringify(c?.contacts || []));
@@ -1431,7 +1486,10 @@ function openCompanyForm(id = null, presetName = '') {
       <button type="button" class="iconbtn" data-rmc="${i}" title="Remove contact">${ICON.close}</button></div>`).join('');
   openModal(`<div class="mh"><h2>${c ? 'Edit company' : 'Add company'}</h2><button class="iconbtn" data-act="closemodal">${ICON.close}</button></div>
     <form class="mb" id="cf-form" autocomplete="off">
-      <label class="f">Company name<input type="text" id="cf-name" value="${esc(c?.name || presetName)}" required><span class="small" id="cf-dupe"></span></label>
+      <div class="grid2" style="grid-template-columns:minmax(0,2fr) minmax(0,1fr)">
+        <label class="f">Company / firm name<input type="text" id="cf-name" value="${esc(c?.name || presetName)}" required><span class="small" id="cf-dupe"></span></label>
+        <label class="f">Type<select id="cf-cat">${CATS.map(x => `<option value="${x.k}" ${(c ? catOf(c) : presetCat) === x.k ? 'selected' : ''}>${x.label}</option>`).join('')}</select></label>
+      </div>
       <div class="grid3">
         <label class="f">Stage<select id="cf-stage">${STAGES.map(s => `<option value="${s.k}" ${(c?.stage || 'new') === s.k ? 'selected' : ''}>${s.label}</option>`).join('')}</select></label>
         <label class="f">Source<select id="cf-source">${SOURCES.map(s => `<option ${(c?.source || 'Cold call') === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
@@ -1463,12 +1521,12 @@ function openCompanyForm(id = null, presetName = '') {
       const name = $('#cf-name', m).value.trim();
       if (!name) { $('#cf-err', m).textContent = 'Enter the company name.'; return; }
       if (dupe()) { $('#cf-err', m).textContent = 'This company already exists. Open the existing one instead.'; return; }
-      const row = { id: c?.id || uuid(), name, stage: $('#cf-stage', m).value, source: $('#cf-source', m).value, city: $('#cf-city', m).value.trim() || null,
+      const row = { id: c?.id || uuid(), name, category: $('#cf-cat', m).value, stage: $('#cf-stage', m).value, source: $('#cf-source', m).value, city: $('#cf-city', m).value.trim() || null,
         requirement: $('#cf-req', m).value || null, amount_cr: $('#cf-amt', m).value ? Number($('#cf-amt', m).value) : null, sector: $('#cf-sector', m).value.trim() || null,
         banks: $('#cf-banks', m).value.trim() || null, website: $('#cf-web', m).value.trim() || null, notes: $('#cf-notes', m).value.trim() || null,
         contacts: contacts.filter(p => p.name || p.phone || p.email) };
       $('#cf-save', m).disabled = true;
-      try { const saved = await saveCompany(row); closeModal(); toast(c ? 'Company updated' : 'Company added'); scheduleRender(); if (!c) openDrawer(saved.id); }
+      try { const saved = await saveCompany(row); closeModal(); toast(c ? 'Saved' : 'Added'); scheduleRender(); if (!c) openDrawer(saved.id); }
       catch (e) { $('#cf-err', m).textContent = friendlyErr(e); $('#cf-save', m).disabled = false; }
     });
     $('#cf-name', m).focus();
@@ -1695,8 +1753,8 @@ function exportCalls(all) {
 }
 function exportCompanies() {
   const la = lastActsMap(); const cc = callCount();
-  download(`AAS-companies-${today()}.csv`, toCSV(['Company', 'Stage', 'Requirement', 'Amount (Rs Cr)', 'Existing bankers', 'Sector', 'City', 'Source', 'Contacts', 'Last call', 'Last status', 'Next follow-up', 'Meeting', 'Calls', 'Notes'],
-    [...S.companies.values()].sort((a, b) => a.name.localeCompare(b.name)).map(c => [c.name, STG[c.stage]?.label, c.requirement, c.amount_cr, c.banks, c.sector, c.city, c.source,
+  download(`AAS-companies-${today()}.csv`, toCSV(['Company', 'Type', 'Stage', 'Requirement', 'Amount (Rs Cr)', 'Existing bankers', 'Sector', 'City', 'Source', 'Contacts', 'Last call', 'Last status', 'Next follow-up', 'Meeting', 'Calls', 'Notes'],
+    [...S.companies.values()].sort((a, b) => a.name.localeCompare(b.name)).map(c => [c.name, CAT[catOf(c)].label, STG[c.stage]?.label, c.requirement, c.amount_cr, c.banks, c.sector, c.city, c.source,
       (c.contacts || []).map(p => [p.name, p.designation, p.phone, p.email].filter(Boolean).join(' / ')).join('; '), la.get(c.id)?.call_date, OUT[la.get(c.id)?.outcome]?.label, c.next_follow_up, c.meeting_date, cc.get(c.id) || 0, c.notes])));
 }
 
@@ -1726,7 +1784,9 @@ document.addEventListener('click', async e => {
     case 'open': closeModal(); $('#gs-res') && ($('#gs-res').hidden = true); return openDrawer(id);
     case 'closedrawer': return closeDrawer();
     case 'closemodal': return closeModal();
-    case 'newco': $('#gs-res') && ($('#gs-res').hidden = true); return openCompanyForm(null, el.dataset.name || '');
+    case 'newco': $('#gs-res') && ($('#gs-res').hidden = true); return openCompanyForm(null, el.dataset.name || '', el.dataset.cat || 'client');
+    case 'netlog': return openLog({ category: UI.network.cat || 'bank' });
+    case 'netcat': UI.network.cat = el.dataset.k; $$('[data-act="netcat"]').forEach(b => b.classList.toggle('on', b === el)); return VIEWS.network.body();
     case 'editco': return openCompanyForm(id);
     case 'delco-ask': $('#drawer').dataset.confirm = '1'; return renderDrawer();
     case 'delco-cancel': $('#drawer').dataset.confirm = ''; return renderDrawer();
