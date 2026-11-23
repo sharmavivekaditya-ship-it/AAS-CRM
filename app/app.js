@@ -60,6 +60,16 @@ const CATS = [
 const CAT = Object.fromEntries(CATS.map(c => [c.k, c]));
 const catOf = c => (c && CAT[c.category]) ? c.category : 'client';
 const isNet = c => !!c && catOf(c) !== 'client';
+// Suggest a type from the name: "SBI ... Bank" -> bank, "Shah & Associates" / "CA ..." -> CA firm, etc.
+function guessCat(name) {
+  const n = ' ' + String(name || '').toLowerCase().replace(/[.,()\/-]/g, ' ') + ' ';
+  if (/\bbank\b|\bbranch\b|\bsidbi\b|\bnabard\b|\bexim\b|\b(sbi|hdfc|icici|axis|kotak|pnb|idbi|canara|indusind|idfc|federal|rbl|bandhan|uco|boi|bob)\b/.test(n)) return 'bank';
+  if (/chartered accountant|\bca\b|\bc a\b|&\s*associates|\bassociates\b/.test(n)) return 'ca';
+  if (/\bdsa\b|\bconnector\b/.test(n)) return 'dsa';
+  if (/consult|advisor|advisory/.test(n)) return 'consultant';
+  return null;
+}
+const keptClient = () => { try { return new Set(JSON.parse(localStorage.getItem('aas.keepClient') || '[]')); } catch (e) { return new Set(); } };
 const catChip = k => `<span class="chip plain tone-indigo">${CAT[k]?.label || 'Other'}</span>`;
 const STG = Object.fromEntries(STAGES.map((s, i) => [s.k, { ...s, rank: i }]));
 const NOT_CONNECTED = new Set(['not_answering', 'no_response']);
@@ -277,6 +287,7 @@ async function loadAll() {
       sb.from('profiles').select('*'), sb.from('settings').select('*').eq('id', 1).maybeSingle(),
     ]);
     S.companies = new Map(cos.map(r => [r.id, r]));
+    S.hasCategory = !cos.length || cos.some(r => 'category' in r);
     S.acts = new Map(acts.map(r => [r.id, r]));
     S.profiles = new Map((profs.data || []).map(r => [r.id, r]));
     if (set.data) S.settings = set.data;
@@ -315,6 +326,8 @@ async function saveCompany(row) {
   let { data, error } = await sb.from('companies').upsert(row).select().single();
   if (error && /category/.test(error.message || '') && 'category' in row) {   // 05 SQL not run yet
     const { category, ...rest } = row; ({ data, error } = await sb.from('companies').upsert(rest).select().single());
+    S.hasCategory = false;
+    if (!error && category && category !== 'client') setTimeout(() => toast(`Saved, but the type (${CAT[category]?.label}) could not be saved. The database needs one update: ${isAdmin() ? 'run supabase/05_banks_network.sql in Supabase' : 'please tell Vivek'}.`, true), 2600);
   }
   if (error) throw error;
   S.companies.set(data.id, data); return data;
@@ -343,7 +356,7 @@ const fail = e => toast(friendlyErr(e), true);
 function friendlyErr(e) {
   const m = String(e?.message || e || 'Something went wrong');
   if (/row-level security|permission|42501/i.test(m)) return "You don't have permission to do that. Ask your admin.";
-  if (/fetch|network/i.test(m)) return 'No internet connection. Please try again.';
+  if (/failed to fetch|networkerror|network request failed/i.test(m)) return 'No internet connection. Please try again.';
   return m;
 }
 
@@ -409,6 +422,8 @@ function updateCounts() {
   const idx = coByNorm(); let fresh = 0;
   for (const l of S.leads.values()) if (leadState(l, idx).k === 'new') fresh++;
   $$('[data-count="leads"]').forEach(el => { el.hidden = !fresh; el.textContent = fresh; });
+  const kept = keptClient(); const toSort = [...S.companies.values()].filter(c => !isNet(c) && !kept.has(c.id) && guessCat(c.name)).length;
+  $$('[data-count="network"]').forEach(el => { el.hidden = !toSort; el.textContent = toSort; el.classList.toggle('alert', toSort > 0); el.title = 'Names in Companies that look like banks, CAs or consultants'; });
 }
 window.addEventListener('hashchange', () => {
   const h = location.hash.slice(1);
@@ -666,10 +681,21 @@ VIEWS.network = {
   wire() { $('#nw-q').addEventListener('input', debounce(e => { UI.network.q = e.target.value; this.body(); }, 150)); },
   body() {
     const u = UI.network; const q = u.q.trim().toLowerCase(); const la = lastActsMap(); const cc = callCount();
+    const kept = keptClient();
+    const sugg = [...S.companies.values()].filter(c => !isNet(c) && !kept.has(c.id) && guessCat(c.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const warn = S.hasCategory === false ? `<div class="banner" style="margin-bottom:14px">The database is missing one update, so bank / consultant / CA types are not being saved and these names are going to Companies. ${isAdmin() ? 'Run <code>supabase/05_banks_network.sql</code> in the Supabase SQL Editor, then refresh this page.' : 'Please tell Vivek.'}</div>` : '';
+    const suggHTML = sugg.length ? `<section class="panel" style="margin-bottom:14px"><div class="ph"><div><h2>Found in Companies: ${plural(sugg.length, 'name')} that look like banks, CAs or consultants</h2>
+        <div class="small muted" style="margin-top:2px">Check the type and click Move. Their calls and history move with them. Not listed? Open it from Companies and change Type at the top.</div></div>
+        <button class="btn sm primary" data-act="netmoveall">Move all as shown</button></div>
+      <div class="pb flush tablewrap"><table class="t"><tbody>${sugg.map(c => { const l = la.get(c.id); const g = guessCat(c.name);
+        return `<tr><td class="co">${esc(c.name)}<div class="small muted">${l ? 'Last call ' + esc(fShort(l.call_date)) : 'No calls yet'} · ${plural(cc.get(c.id) || 0, 'call')}</div></td>
+          <td style="width:200px"><select id="nm-${c.id}" style="width:auto">${CATS.filter(x => x.k !== 'client').map(x => `<option value="${x.k}" ${g === x.k ? 'selected' : ''}>${x.label}</option>`).join('')}</select></td>
+          <td class="n" style="white-space:nowrap"><button class="btn sm" data-act="netmove" data-id="${c.id}">Move</button> <button class="btn sm ghost" data-act="netkeep" data-id="${c.id}">Keep in Companies</button></td></tr>`; }).join('')}</tbody></table></div></section>` : '';
     const rows = [...S.companies.values()].filter(c => isNet(c) && (!u.cat || catOf(c) === u.cat)
       && (!q || [c.name, c.city, ...(c.contacts || []).map(p => p.name + ' ' + p.phone)].some(x => String(x || '').toLowerCase().includes(q))))
       .sort((a, b) => String(la.get(b.id)?.call_date || b.created_at).localeCompare(String(la.get(a.id)?.call_date || a.created_at)));
-    $('#vb').innerHTML = `<section class="panel"><div class="ph"><span class="small"><strong>${plural(rows.length, 'contact')}</strong></span></div><div class="pb flush tablewrap">${rows.length ? `<table class="t">
+    $('#vb').innerHTML = warn + suggHTML + `<section class="panel"><div class="ph"><span class="small"><strong>${plural(rows.length, 'contact')}</strong></span></div><div class="pb flush tablewrap">${rows.length ? `<table class="t">
       <thead><tr><th>Name</th><th>Type</th><th>Contact person</th><th>Last call</th><th>Next follow-up</th><th class="n">Calls</th></tr></thead>
       <tbody>${rows.map(c => { const l = la.get(c.id); const p = primaryContact(c); const more = (c.contacts || []).filter(x => x.name || x.phone).length - 1;
         return `<tr class="click" data-act="open" data-id="${c.id}"><td class="co">${esc(c.name)}${c.city ? `<div class="small muted">${esc(c.city)}</div>` : ''}</td><td>${catChip(catOf(c))}</td>
@@ -1380,8 +1406,11 @@ function openLog({ companyId = null, actId = null, category = 'client' } = {}) {
       if (M.companyId) { const co = S.companies.get(M.companyId); note.innerHTML = co ? `${isNet(co) ? catChip(catOf(co)) : stageChip(co.stage)} ${plural(actsFor(co.id).length, 'earlier call')}` : ''; }
       else note.innerHTML = v ? '<span>New name. It will be added to BD Desk.</span>' : '';
       $('#lc-cat-wrap', m).hidden = !!M.companyId || !v;
+      if (!M.companyId && v && !catTouched) $('#lc-cat', m).value = guessCat(v) || category;
     };
+    let catTouched = category !== 'client';
     $('#lc-cat', m).value = category;
+    $('#lc-cat', m).addEventListener('change', () => { catTouched = true; });
     let hl = 0, hits = [];
     const showList = () => {
       const v = coIn.value.trim(); const nv = norm(v);
@@ -1786,6 +1815,19 @@ document.addEventListener('click', async e => {
     case 'closemodal': return closeModal();
     case 'newco': $('#gs-res') && ($('#gs-res').hidden = true); return openCompanyForm(null, el.dataset.name || '', el.dataset.cat || 'client');
     case 'netlog': return openLog({ category: UI.network.cat || 'bank' });
+    case 'netmove': {
+      const sel = document.getElementById('nm-' + id); el.disabled = true;
+      try { await patchCompany(id, { category: sel.value }); toast(`Moved to Banks & network as ${CAT[sel.value].label}`); }
+      catch (err) { el.disabled = false; fail(/category/.test(err.message || '') ? 'The database needs one update first. Run supabase/05_banks_network.sql in Supabase.' : err); }
+      return;
+    }
+    case 'netmoveall': {
+      const ids = $$('[id^="nm-"]').map(x => [x.id.slice(3), x.value]); el.disabled = true; el.textContent = 'Moving…'; let n = 0;
+      try { for (const [cid, k] of ids) { await patchCompany(cid, { category: k }); n++; } toast(`${plural(n, 'name')} moved to Banks & network`); }
+      catch (err) { el.disabled = false; el.textContent = 'Move all as shown'; fail(/category/.test(err.message || '') ? 'The database needs one update first. Run supabase/05_banks_network.sql in Supabase.' : err); }
+      return;
+    }
+    case 'netkeep': { const k = keptClient(); k.add(id); try { localStorage.setItem('aas.keepClient', JSON.stringify([...k])); } catch (e) { /* ignore */ } return VIEWS.network.body(); }
     case 'netcat': UI.network.cat = el.dataset.k; $$('[data-act="netcat"]').forEach(b => b.classList.toggle('on', b === el)); return VIEWS.network.body();
     case 'editco': return openCompanyForm(id);
     case 'delco-ask': $('#drawer').dataset.confirm = '1'; return renderDrawer();
