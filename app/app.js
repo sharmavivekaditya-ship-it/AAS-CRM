@@ -1056,7 +1056,10 @@ const cellNum = v => { if (typeof v === 'number') return v; const t = cellStr(v)
 function headerIdx(rows) { return rows.findIndex(r => (r || []).some(c => ['company', 'company name', 'name of company'].includes(hk(c)))); }
 function colFinder(head) {
   const H = head.map(hk);
-  return (...names) => { for (const n of names) { const i = H.indexOf(n); if (i >= 0) return i; } for (const n of names) { const i = H.findIndex(h => h.startsWith(n)); if (i >= 0) return i; } return -1; };
+  // exact heading first, then "starts with", then the words anywhere in the heading
+  // (so "Senior-most contact (with mobile)" is still found as the contact person)
+  const has = (h, n) => (' ' + h + ' ').includes(' ' + n + ' ');
+  return (...names) => { for (const n of names) { const i = H.indexOf(n); if (i >= 0) return i; } for (const n of names) { const i = H.findIndex(h => h.startsWith(n)); if (i >= 0) return i; } for (const n of names) { const i = H.findIndex(h => has(h, n)); if (i >= 0) return i; } return -1; };
 }
 const cellTxt = v => { const t = cellStr(v); return (t === null || t === '0') ? null : t; };
 function fmtPhone(v) {
@@ -1106,16 +1109,20 @@ function parseLeadsWorkbook(wb) {
     const c = colFinder(sh.head); const H = sh.head.map(hk);
     const C = { rank: c('#', 's no', 'sr no', 'sl no'), pri: c('priority'), name: c('company', 'company name', 'name of company'), web: c('website'),
       own: c('ownership'), ind: c('industry', 'sector', 'nature of business'), loc: c('location', 'city'), proj: c('project', 'project name'), pcr: c('project cr', 'project size', 'project amount', 'project cost'),
-      stage: c('stage', 'project stage'), rating: c('rating', 'current rating'), agency: c('agency name', 'rating agency'), lim: c('bank limits cr', 'bank limits', 'loan size'), untied: c('untied cr', 'untied'), turn: c('turnover cr', 'turnover'),
-      md: c('md head', 'md'), cfo: c('cfo'), c1: c('contact 1', 'contact person', 'director name', 'contact', 'name of person'), d1: c('designation 1', 'designation'),
+      stage: c('stage', 'project stage', 'furthest stage', 'current stage'), upd: c('latest update', 'site update'), rating: c('rating', 'current rating'), agency: c('agency name', 'rating agency'), lim: c('bank limits cr', 'bank limits', 'loan size'), untied: c('untied cr', 'untied'), turn: c('turnover cr', 'turnover'),
+      md: c('md head', 'md'), cfo: c('cfo'), c1: c('contact 1', 'contact person', 'director name', 'name of person', 'person name', 'key person', 'promoter name', 'senior most contact', 'contact name', 'contact'), d1: c('designation 1', 'designation'),
       p1: c('phone 1', 'phone', 'mobile', 'contact number'), e1: c('email 1', 'email'), c2: c('contact 2'), d2: c('designation 2'), p2: c('phone 2'), e2: c('email 2'),
-      trig: c('lead trigger', 'trigger'), sol: c('aas solution', 'solution') };
+      trig: c('lead trigger', 'trigger', 'why this priority'), sol: c('aas solution', 'solution', 'products to pitch') };
     if (C.proj === C.pcr) C.proj = -1;
+    // the person column must never be the phone column ("Contact number")
+    if (C.c1 >= 0 && C.c1 === C.p1) C.c1 = H.findIndex((h, i) => i !== C.p1 && /\b(contact|person|director|promoter)\b/.test(h) && !/\b(number|no|mobile|phone|email)$/.test(h));
     // every "Remarks"/"Notes" column, plus unnamed columns at the end that hold text
     const lastNamed = H.reduce((m, h, i) => h ? i : m, -1);
     const remCols = H.map((h, i) => (/^(remark|notes|comment)/.test(h) || (!h && i > lastNamed)) ? i : -1).filter(i => i >= 0);
     sh.rows.forEach(r => {
       const name = cellStr(g(r, C.name)); if (!name) return;
+      // skip totals / source notes typed under the list (only the company cell, maybe a count, is filled)
+      if (!(r || []).some((v, i) => i !== C.name && i !== C.pcr && i !== C.rank && cellStr(v))) return;
       if (si === 0) rowCount++;
       const rank = cellNum(g(r, C.rank));
       const key = 'n' + norm(name);
@@ -1135,6 +1142,7 @@ function parseLeadsWorkbook(wb) {
         const nm = cellStr(g(r, a)); addContact(L, { name: nm ? titleName(nm) : '', designation: cellStr(g(r, d)) || '', phone: fmtPhone(g(r, p)), email: cellStr(g(r, e)) || '' });
       });
       const who = cellStr(g(r, C.c1));
+      const upd = cellTxt(g(r, C.upd)); if (upd && !L._notes.includes('Site update: ' + upd)) L._notes.push('Site update: ' + upd);
       remCols.forEach(i => { const t = cellTxt(g(r, i)); if (!t) return; const line = who ? `${titleName(who)}: ${t}` : t; if (!L._notes.includes(line)) L._notes.push(line); });
     });
   });
